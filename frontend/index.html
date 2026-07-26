@@ -1,0 +1,1122 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Office</title>
+<style>
+:root{
+  --bg:#f8f7f4;--bg2:#ffffff;--bg3:#f2f0eb;
+  --bd:#e4e1db;--bd2:#d0ccc5;
+  --tx:#1a1a1a;--mu:#8a8680;--mu2:#b5b1ab;
+  --ac:#1a1a1a;--gr:#2a6e42;--ye:#b8880a;--re:#b84040;--pu:#5a3aaa;
+  --card-shadow:0 1px 3px rgba(0,0,0,0.06);
+}
+body.dark{
+  --bg:#0d1117;--bg2:#161b22;--bg3:#21262d;
+  --bd:#30363d;--bd2:#484f58;
+  --tx:#e6edf3;--mu:#8b949e;--mu2:#484f58;
+  --ac:#e6edf3;--gr:#3fb950;--ye:#d29922;--re:#f85149;--pu:#a371f7;
+  --card-shadow:0 1px 3px rgba(0,0,0,0.4);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;font-size:14px;line-height:1.6;transition:background .2s,color .2s}
+#app{max-width:1000px;margin:0 auto;padding:24px 24px 48px}
+.topbar{display:flex;align-items:center;gap:10px;padding-bottom:20px;border-bottom:1px solid var(--bd);margin-bottom:20px;flex-wrap:wrap}
+.logo{font-size:15px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;flex:0 0 auto}
+.logo span{font-weight:300;color:var(--mu)}
+.spacer{flex:1}
+.topbar input{font-size:12px;padding:7px 12px;background:var(--bg2);border:1px solid var(--bd);border-radius:3px;color:var(--tx);width:170px}
+.topbar input:focus{outline:none;border-color:var(--bd2)}
+.topbar button{font-size:12px;padding:7px 14px;border-radius:3px;border:1px solid var(--bd2);background:transparent;color:var(--tx);cursor:pointer;letter-spacing:.04em;text-transform:uppercase;font-weight:500;transition:.15s;font-family:inherit}
+.topbar button:hover{background:var(--tx);color:var(--bg)}
+#theme-btn{padding:7px 10px;font-size:16px;border:1px solid var(--bd);letter-spacing:0;text-transform:none}
+#cstat{font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+#ram-indicator{font-size:11px;color:var(--mu);letter-spacing:.04em;padding:4px 8px;border-radius:3px;border:1px solid var(--bd);background:var(--bg3)}
+#sleep-banner{display:none;background:var(--bg2);border:1px solid var(--ye);border-radius:3px;padding:10px 16px;font-size:12px;color:var(--ye);align-items:center;gap:12px;margin-bottom:16px}
+.tabs{display:flex;border-bottom:1px solid var(--bd);margin-bottom:24px;overflow-x:auto;gap:0}
+.tab{padding:10px 16px;cursor:pointer;font-size:12px;color:var(--mu);border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap;letter-spacing:.06em;text-transform:uppercase;font-weight:500;transition:.15s;position:relative;flex-shrink:0}
+.tab:hover{color:var(--tx)}.tab.active{color:var(--tx);border-bottom-color:var(--tx)}
+.bdot{position:absolute;top:8px;right:5px;width:5px;height:5px;border-radius:50%;background:var(--ye)}
+.panel{display:none;flex-direction:column;gap:16px}.panel.active{display:flex}
+canvas{display:block;border-radius:2px;border:1px solid var(--bd);width:100%;image-rendering:pixelated}
+.card{background:var(--bg2);border:1px solid var(--bd);border-radius:3px;padding:20px;box-shadow:var(--card-shadow)}
+.ct{font-size:10px;font-weight:600;color:var(--mu);text-transform:uppercase;letter-spacing:.1em;margin-bottom:14px}
+.card.warn{border-color:var(--ye)}.card.dim{background:var(--bg3)}
+input,textarea{background:var(--bg3);border:1px solid var(--bd);border-radius:3px;color:var(--tx);padding:8px 12px;font-size:13px;width:100%;font-family:inherit;transition:.15s}
+input:focus,textarea:focus{outline:none;border-color:var(--bd2);background:var(--bg2)}
+textarea{resize:vertical;min-height:64px;line-height:1.5}
+button{padding:8px 18px;border-radius:3px;border:1px solid var(--bd2);background:var(--bg2);color:var(--tx);cursor:pointer;font-size:12px;white-space:nowrap;letter-spacing:.04em;font-weight:500;transition:.15s;font-family:inherit}
+button:hover{border-color:var(--tx)}
+button.primary{background:var(--tx);color:var(--bg);border-color:var(--tx)}
+button.primary:hover{opacity:.85}
+button.ghost{background:transparent;border-color:var(--bd);color:var(--mu)}
+button.ghost:hover{border-color:var(--bd2);color:var(--tx)}
+button.danger{border-color:var(--re);color:var(--re);background:transparent}
+button.danger:hover{background:var(--re);color:white}
+button.ok{border-color:var(--gr);color:var(--gr);background:transparent}
+button.ok:hover{background:var(--gr);color:white}
+button.sm{padding:5px 10px;font-size:11px}
+button.xs{padding:3px 8px;font-size:10px;letter-spacing:.03em}
+.row{display:flex;gap:10px;align-items:center}
+.col{display:flex;flex-direction:column;gap:10px}
+.badge{display:inline-block;padding:2px 8px;border-radius:2px;font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase}
+.b-run{background:color-mix(in srgb,var(--gr) 15%,transparent);color:var(--gr);border:1px solid color-mix(in srgb,var(--gr) 30%,transparent)}
+.b-done{background:color-mix(in srgb,var(--gr) 15%,transparent);color:var(--gr);border:1px solid color-mix(in srgb,var(--gr) 30%,transparent)}
+.b-plan{background:color-mix(in srgb,var(--pu) 15%,transparent);color:var(--pu);border:1px solid color-mix(in srgb,var(--pu) 30%,transparent)}
+.b-can{background:color-mix(in srgb,var(--re) 15%,transparent);color:var(--re);border:1px solid color-mix(in srgb,var(--re) 30%,transparent)}
+.b-pend{background:var(--bg3);color:var(--mu);border:1px solid var(--bd)}
+.b-stop{background:color-mix(in srgb,var(--ye) 15%,transparent);color:var(--ye);border:1px solid color-mix(in srgb,var(--ye) 30%,transparent)}
+.b-pause{background:color-mix(in srgb,var(--pu) 15%,transparent);color:var(--pu);border:1px solid color-mix(in srgb,var(--pu) 30%,transparent)}
+.ag-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--bd)}
+.ag-row:last-child{border:none}
+.ag-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.ag-name{font-weight:600;font-size:13px;min-width:80px}
+.ag-task{color:var(--mu);font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.proj-card{background:var(--bg2);border:1px solid var(--bd);border-radius:3px;padding:16px;display:flex;flex-direction:column;gap:10px;box-shadow:var(--card-shadow)}
+.prog{height:2px;background:var(--bd);border-radius:1px;overflow:hidden}
+.prog-f{height:100%;background:var(--tx);border-radius:1px;transition:width .5s}
+.step{display:flex;align-items:center;gap:8px;font-size:12px;padding:3px 0}
+.sic{width:14px;height:14px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700}
+.sic.done{background:var(--tx);color:var(--bg)}.sic.running{background:var(--tx);color:var(--bg);animation:pulse 1.2s infinite}
+.sic.pending{background:transparent;border:1px solid var(--bd)}.sic.cancelled{border:1px solid var(--re);color:var(--re)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.task-row{display:flex;align-items:flex-start;gap:10px;padding:12px 0;border-bottom:1px solid var(--bd)}
+.task-row:last-child{border:none}
+.task-prio{width:4px;border-radius:2px;align-self:stretch;flex-shrink:0}
+.prio-1{background:var(--re)}.prio-2{background:var(--bd2)}.prio-3{background:var(--mu2)}
+#chef-panel{display:flex;flex-direction:column;height:540px}
+#chef-messages{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:12px;background:var(--bg3);border:1px solid var(--bd);border-radius:3px 3px 0 0}
+.chef-msg{display:flex;gap:12px;align-items:flex-start}
+.chef-msg.user{flex-direction:row-reverse}
+.chef-avatar{width:30px;height:30px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;font-weight:700}
+.chef-avatar.bot{background:var(--tx);color:var(--bg)}.chef-avatar.user{background:var(--bd);color:var(--mu)}
+.chef-bubble{padding:10px 14px;border-radius:3px;font-size:13px;line-height:1.6;max-width:78%}
+.chef-bubble.bot{background:var(--bg2);border:1px solid var(--bd)}.chef-bubble.user{background:var(--tx);color:var(--bg)}
+.chef-name{font-size:10px;color:var(--mu);margin-bottom:4px;text-transform:uppercase;letter-spacing:.06em}
+.chef-typing{display:flex;gap:4px;padding:6px 0}
+.chef-typing span{width:5px;height:5px;border-radius:50%;background:var(--mu);animation:typing .8s ease-in-out infinite}
+.chef-typing span:nth-child(2){animation-delay:.15s}.chef-typing span:nth-child(3){animation-delay:.3s}
+@keyframes typing{0%,100%{opacity:.3;transform:translateY(0)}50%{opacity:1;transform:translateY(-3px)}}
+#chef-input-row{display:flex;border:1px solid var(--bd);border-top:none;border-radius:0 0 3px 3px;overflow:hidden}
+#chef-input{border:none;border-radius:0;background:var(--bg2);font-size:13px;padding:14px 16px}
+#chef-input:focus{outline:none}
+#chef-send{border:none;border-radius:0;border-left:1px solid var(--bd);padding:14px 20px;background:var(--bg2);color:var(--tx);font-size:12px;letter-spacing:.06em;text-transform:uppercase;cursor:pointer;transition:.15s;font-family:inherit;font-weight:500}
+#chef-send:hover{background:var(--tx);color:var(--bg)}
+.quick-grid{display:flex;flex-wrap:wrap;gap:8px}
+.quick-btn{display:flex;align-items:center;gap:8px;padding:10px 14px;border:1px solid var(--bd);border-radius:3px;cursor:pointer;background:var(--bg2);color:var(--tx);font-size:12px;font-weight:500;transition:.15s;font-family:inherit}
+.quick-btn:hover{border-color:var(--tx);background:var(--bg3)}
+.quick-icon{font-size:16px}
+.msgs{display:flex;flex-direction:column;gap:8px;max-height:200px;overflow-y:auto}
+.msg{padding:10px 14px;border-radius:3px;font-size:13px;line-height:1.5;max-width:82%}
+.msg.user{background:var(--tx);color:var(--bg);align-self:flex-end}
+.msg.bot{background:var(--bg3);border:1px solid var(--bd);align-self:flex-start}
+.msg.sys{color:var(--mu);font-size:11px;align-self:center;text-align:center;letter-spacing:.03em}
+.stat-row{display:flex;gap:12px}
+.stat{flex:1;background:var(--bg2);border:1px solid var(--bd);border-radius:3px;padding:16px;text-align:center}
+.stat-num{font-size:28px;font-weight:300;letter-spacing:-.02em}
+.stat-label{font-size:10px;color:var(--mu);margin-top:4px;text-transform:uppercase;letter-spacing:.08em}
+.file-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--bd)}
+.file-row:last-child{border:none}
+.drop-zone{border:1px dashed var(--bd2);border-radius:3px;padding:32px;text-align:center;color:var(--mu);cursor:pointer;transition:.2s;font-size:13px}
+.drop-zone:hover,.drop-zone.drag{border-color:var(--tx);color:var(--tx)}
+.skill-chip{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:2px;font-size:12px;background:var(--bg3);border:1px solid var(--bd);margin:3px}
+.tool-row,.stack-row,.sched-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--bd)}
+.tool-row:last-child,.stack-row:last-child,.sched-row:last-child{border:none}
+.toggle{position:relative;width:32px;height:18px;flex-shrink:0}
+.toggle input{opacity:0;position:absolute;width:100%;height:100%;cursor:pointer;z-index:2}
+.t-track{position:absolute;inset:0;background:var(--bd2);border-radius:9px;transition:.2s}
+.toggle input:checked+.t-track{background:var(--tx)}
+.t-thumb{position:absolute;top:3px;left:3px;width:12px;height:12px;background:var(--bg2);border-radius:50%;transition:.2s;pointer-events:none}
+.toggle input:checked~.t-thumb{left:17px}
+.days-grid{display:flex;gap:4px}
+.day-btn{width:30px;height:30px;border-radius:3px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:11px;font-weight:600;border:1px solid var(--bd);background:var(--bg3);color:var(--mu);transition:.15s}
+.day-btn.active{background:var(--tx);border-color:var(--tx);color:var(--bg)}
+.upd-card{background:var(--bg3);border-radius:3px;padding:14px;margin-bottom:10px;border-left:2px solid var(--ye)}
+pre{font-size:11px;background:var(--bg3);padding:12px;border-radius:3px;overflow-x:auto;max-height:160px;color:var(--tx);border:1px solid var(--bd);font-family:'Consolas',monospace;line-height:1.5}
+.tpl-btn{padding:8px 14px;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:12px;background:var(--bg3);color:var(--tx);transition:.15s;font-family:inherit;font-weight:500;display:inline-flex;align-items:center;gap:6px}
+.tpl-btn:hover{border-color:var(--bd2)}.tpl-btn.selected{border-color:var(--tx);background:color-mix(in srgb,var(--tx) 8%,transparent)}
+#drop-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.6);display:none;align-items:center;justify-content:center;z-index:9999;pointer-events:none;border:4px dashed rgba(255,255,255,0.3)}
+#drop-overlay span{color:white;font-size:20px;font-weight:300;letter-spacing:.1em;text-transform:uppercase}
+#task-summary-box{background:color-mix(in srgb,var(--ye) 10%,transparent);border:1px solid color-mix(in srgb,var(--ye) 40%,transparent);border-radius:3px;padding:14px;font-size:13px;line-height:1.7;display:none}
+.roster-row{display:flex;align-items:flex-start;gap:12px;padding:12px 0;border-bottom:1px solid var(--bd)}
+.roster-row:last-child{border:none}
+.agent-comm{display:flex;align-items:flex-start;gap:8px;padding:8px;background:var(--bg3);border-radius:3px;border:1px solid var(--bd)}
+.perf-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--bd)}
+.perf-row:last-child{border:none}
+.perf-bar{height:6px;border-radius:3px;background:var(--gr);transition:width .5s}
+</style>
+</head>
+<body>
+<div id="drop-overlay"><span>Datei loslassen → Inbox</span></div>
+<div id="app">
+
+<div class="topbar">
+  <div class="logo">Agent<span>Office</span></div>
+  <div class="spacer"></div>
+  <input id="surl" value="http://umbrel.local:8000"/>
+  <button onclick="doConnect()">Connect</button>
+  <button id="theme-btn" onclick="toggleDark()" title="Dark/Light">◐</button>
+  <span id="ram-indicator" style="font-size:11px;color:var(--mu);letter-spacing:.04em;padding:4px 8px;border-radius:3px;border:1px solid var(--bd);background:var(--bg3)"></span>
+  <span id="cstat" style="color:var(--mu)">Offline</span>
+</div>
+
+<div id="sleep-banner">
+  ◐ Schlafmodus — Agenten ruhen.
+  <span id="queued-count" style="margin-left:auto"></span>
+</div>
+
+<div class="tabs">
+  <div class="tab active" onclick="sw('office',this)">Büro</div>
+  <div class="tab" onclick="sw('chef',this)">Chef</div>
+  <div class="tab" onclick="sw('tasks',this)">Aufgaben</div>
+  <div class="tab" onclick="sw('projects',this)">Projekte</div>
+  <div class="tab" onclick="sw('files',this)">Dateien</div>
+  <div class="tab" onclick="sw('skills',this)">Skills</div>
+  <div class="tab" id="ttab" onclick="sw('tools',this)">Tools</div>
+  <div class="tab" id="utab" onclick="sw('updates',this)">Updates</div>
+  <div class="tab" onclick="sw('settings',this)">Einstellungen</div>
+  <div class="tab" onclick="sw('help',this)">Hilfe</div>
+</div>
+
+<!-- BÜRO -->
+<div id="tab-office" class="panel active">
+  <canvas id="c" width="952" height="280"></canvas>
+  <div class="card">
+    <div class="ct">Agenten</div>
+    <div id="ag-list"><div style="color:var(--mu);font-size:13px">Nicht verbunden.</div></div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <div class="card">
+      <div class="ct">Team-Roster</div>
+      <div id="roster-list"><div style="color:var(--mu);font-size:13px">Wird geladen...</div></div>
+      <div style="margin-top:14px;display:flex;gap:8px">
+        <input id="hire-spec" placeholder="Spezialisierung z.B. FFmpeg-Experte" style="flex:1"/>
+        <button onclick="manualHire()" class="ok sm">+ Einstellen</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="ct">Agent-Kommunikation <span id="msg-count" style="color:var(--mu);font-weight:400;font-size:10px"></span></div>
+      <div id="agent-msgs" style="display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto">
+        <div style="color:var(--mu);font-size:13px">Noch keine Nachrichten.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- CHEF -->
+<div id="tab-chef" class="panel">
+  <div class="card dim" style="padding:14px 18px">
+    <div style="font-size:13px;color:var(--mu);line-height:1.7">
+      <strong style="color:var(--tx)">Chef</strong> kennt alle laufenden Tasks, Projekte, Skills, RAM-Status und Thinking-Modus. Frag ihn was läuft, lass dir den Status erklären oder bitte um Empfehlungen.
+    </div>
+  </div>
+  <div id="chef-panel">
+    <div id="chef-messages">
+      <div class="chef-msg">
+        <div class="chef-avatar bot">C</div>
+        <div>
+          <div class="chef-name">Chef</div>
+          <div class="chef-bubble bot">Guten Tag. Verbinde dich mit dem Server und ich kann den Status berichten, Aufgaben erklären oder Empfehlungen geben.</div>
+        </div>
+      </div>
+    </div>
+    <div id="chef-input-row">
+      <input id="chef-input" placeholder="Was möchtest du wissen oder tun?"/>
+      <button id="chef-send" onclick="sendChef()">Senden →</button>
+    </div>
+  </div>
+</div>
+
+<!-- AUFGABEN -->
+<div id="tab-tasks" class="panel">
+  <div class="card">
+    <div class="ct">Schnell-Buttons</div>
+    <div class="quick-grid" id="quick-grid"><div style="color:var(--mu);font-size:13px">Wird geladen...</div></div>
+  </div>
+  <div class="card">
+    <div class="ct">Neue Aufgabe</div>
+    <div class="col">
+      <div class="row">
+        <input id="tinput" placeholder="z.B. Erstelle ein Python Script das CSV-Dateien zusammenfasst..." onkeydown="if(event.key==='Enter')sendTask()"/>
+        <button class="primary" onclick="sendTask()">Senden →</button>
+      </div>
+      <div class="row" style="gap:6px;flex-wrap:wrap">
+        <span style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.06em">Priorität:</span>
+        <button class="xs" id="prio-1" onclick="setPrio(1)" style="border-color:var(--re);color:var(--re)">● Hoch</button>
+        <button class="xs" id="prio-2" onclick="setPrio(2)" style="font-weight:700">● Normal</button>
+        <button class="xs" id="prio-3" onclick="setPrio(3)">● Niedrig</button>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="ct">UI anpassen</div>
+    <div class="row">
+      <input id="uiinput" placeholder="z.B. Mach das Design kompakter, ändere Farben..."/>
+      <button onclick="modifyUI()" style="border-color:var(--pu);color:var(--pu)">Anpassen →</button>
+    </div>
+  </div>
+  <div id="task-summary-box"></div>
+  <div class="card">
+    <div class="ct">Verlauf</div>
+    <div class="msgs" id="msgs"><div class="msg sys">Verbinde dich mit dem Server.</div></div>
+  </div>
+  <div class="card">
+    <div class="ct">Aktive & wartende Aufgaben</div>
+    <div id="task-list"><div style="color:var(--mu);font-size:13px">Keine.</div></div>
+  </div>
+</div>
+
+<!-- PROJEKTE -->
+<div id="tab-projects" class="panel">
+  <div class="card">
+    <div class="ct">Neues Projekt</div>
+    <div class="col">
+      <input id="pname" placeholder="Projektname"/>
+      <textarea id="pdesc" placeholder="Beschreibung (optional) — je mehr Details, desto besser der Plan"></textarea>
+      <div>
+        <div style="font-size:10px;color:var(--mu);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Template (optional)</div>
+        <div id="template-grid" style="display:flex;flex-wrap:wrap;gap:6px"><div style="color:var(--mu);font-size:12px">Wird geladen...</div></div>
+      </div>
+      <div class="row">
+        <button class="primary" onclick="createProject()">Starten →</button>
+        <button class="ghost sm" id="clear-tpl" onclick="clearTemplate()" style="display:none">Template entfernen ✕</button>
+      </div>
+    </div>
+  </div>
+  <div id="proj-list"></div>
+</div>
+
+<!-- DATEIEN -->
+<div id="tab-files" class="panel">
+  <div class="card">
+    <div class="ct">Inbox</div>
+    <div class="drop-zone" id="dropzone" onclick="document.getElementById('fu').click()">
+      Klicken oder Datei hierher ziehen<br>
+      <span style="font-size:11px;color:var(--mu2);margin-top:4px;display:block;text-transform:uppercase;letter-spacing:.06em">Video · Audio · Bilder · Code · Dokumente</span>
+    </div>
+    <input type="file" id="fu" style="display:none" onchange="uploadFile(this)"/>
+    <div style="margin-top:12px"><input id="file-instr" placeholder="Anweisung (optional) z.B. Schneide die ersten 30 Sekunden raus"/></div>
+    <div style="font-size:11px;color:var(--mu);margin-top:8px">💡 Screenshot mit <kbd style="background:var(--bg3);border:1px solid var(--bd);padding:1px 5px;border-radius:2px;font-size:10px">Strg+V</kbd> direkt einfügen</div>
+  </div>
+  <div class="card">
+    <div class="ct">Inbox <span id="inbox-count" style="color:var(--mu);font-weight:400;font-size:10px"></span></div>
+    <div id="inbox-list"><div style="color:var(--mu);font-size:13px">Leer.</div></div>
+  </div>
+  <div class="card">
+    <div class="ct">Outbox <span id="outbox-count" style="color:var(--mu);font-weight:400;font-size:10px"></span></div>
+    <div id="outbox-list"><div style="color:var(--mu);font-size:13px">Noch keine fertigen Dateien.</div></div>
+  </div>
+  <div class="card dim">
+    <div class="ct">Workspace</div>
+    <div id="workspace-list"><div style="color:var(--mu);font-size:13px">Leer.</div></div>
+  </div>
+</div>
+
+<!-- SKILLS -->
+<div id="tab-skills" class="panel">
+  <div class="stat-row">
+    <div class="stat"><div class="stat-num" id="st-t">—</div><div class="stat-label">Aufgaben</div></div>
+    <div class="stat"><div class="stat-num" id="st-p">—</div><div class="stat-label">Projekte</div></div>
+    <div class="stat"><div class="stat-num" id="st-s">—</div><div class="stat-label">Skills</div></div>
+    <div class="stat"><div class="stat-num" id="st-i">—</div><div class="stat-label">Verbesserungen</div></div>
+  </div>
+  <div class="card">
+    <div class="ct">Modell-Performance (datengetrieben)</div>
+    <div id="perf-list"><div style="color:var(--mu);font-size:13px">Noch keine Daten. Kommt nach ersten Aufgaben.</div></div>
+  </div>
+  <div class="card">
+    <div class="ct">Skill-Bibliothek</div>
+    <div id="skills-list"><div style="color:var(--mu);font-size:13px">Nach 5 Aufgaben startet Selbstverbesserung.</div></div>
+  </div>
+  <div class="card">
+    <div class="ct">Verbesserungs-Log</div>
+    <div id="impr-list" style="display:flex;flex-direction:column;gap:10px"></div>
+  </div>
+</div>
+
+<!-- TOOLS -->
+<div id="tab-tools" class="panel">
+  <div class="card">
+    <div class="ct">Tool registrieren</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <input id="tn" placeholder="Name" style="flex:1;min-width:100px"/>
+      <input id="tu" placeholder="API URL" style="flex:1;min-width:140px"/>
+      <input id="tp" placeholder="Container-Pattern" style="flex:1;min-width:110px"/>
+      <input id="ts" placeholder="Stack-Name" style="flex:1;min-width:110px"/>
+      <button class="primary" onclick="addTool()">Hinzufügen</button>
+    </div>
+  </div>
+  <div class="card warn" id="treq-card">
+    <div class="ct">Agent-Anfragen</div>
+    <div id="treq-list"><div style="color:var(--mu);font-size:13px">Keine Anfragen.</div></div>
+  </div>
+  <div class="card">
+    <div class="ct">Verfügbare Tools</div>
+    <div id="tools-list"><div style="color:var(--mu);font-size:13px">Wird geladen...</div></div>
+  </div>
+</div>
+
+<!-- UPDATES -->
+<div id="tab-updates" class="panel">
+  <div class="card dim">
+    <div class="ct">Proaktiver Code-Analyst</div>
+    <div style="font-size:13px;color:var(--mu);line-height:1.7">Judge analysiert alle 2 Stunden und nach je 5 Aufgaben den eigenen Code. Erst nach deiner Genehmigung wird geändert und der Server neu gestartet.</div>
+  </div>
+  <div class="card warn" id="upd-pend-card">
+    <div class="ct">Ausstehende Vorschläge</div>
+    <div id="upd-pend"><div style="color:var(--mu);font-size:13px">Keine.</div></div>
+  </div>
+  <div class="card">
+    <div class="ct">Verlauf</div>
+    <div id="upd-hist"></div>
+  </div>
+  <div class="card">
+    <div class="ct">Manuell vorschlagen</div>
+    <div class="col">
+      <input id="ut" placeholder="Titel"/>
+      <textarea id="ud" placeholder="Beschreibung..."></textarea>
+      <button class="primary" onclick="proposeUpdate()" style="align-self:flex-start">Vorschlagen →</button>
+    </div>
+  </div>
+</div>
+
+<!-- EINSTELLUNGEN -->
+<div id="tab-settings" class="panel">
+  <div class="card">
+    <div class="ct">Nachdenken & Deep Research</div>
+    <div style="font-size:13px;color:var(--mu);line-height:1.7;margin-bottom:16px">
+      Im <strong style="color:var(--tx)">Thinking-Modus</strong> denkt der Agent systematisch nach (Chain-of-Thought) und recherchiert aus mehreren Winkeln. Langsamer aber gründlicher. Bei Komplexität ≥ 8/10 startet automatisch ein <strong style="color:var(--tx)">Debate</strong> zwischen Coder und Critic.
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap" id="thinking-btns">
+      <button class="tpl-btn" id="tm-off" onclick="setThinkingMode('off')">⚡ Aus — immer direkt</button>
+      <button class="tpl-btn selected" id="tm-auto" onclick="setThinkingMode('auto')">◐ Auto — Agent entscheidet</button>
+      <button class="tpl-btn" id="tm-on" onclick="setThinkingMode('on')">🧠 An — immer nachdenken</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="ct">Agent System-Prompts (Evolution)</div>
+    <div style="font-size:13px;color:var(--mu);margin-bottom:14px;line-height:1.6">Judge verbessert diese Prompts automatisch nach je 10 Aufgaben. Du kannst sie auch manuell anpassen.</div>
+    <div id="prompt-editor" style="display:flex;flex-direction:column;gap:10px">
+      <div style="color:var(--mu);font-size:13px">Wird geladen...</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="ct">Schlafzeiten</div>
+    <div style="background:var(--bg3);border:1px solid var(--bd);border-radius:3px;padding:16px;margin-bottom:16px;display:flex;flex-direction:column;gap:12px">
+      <input id="sc-name" placeholder="Name z.B. Nachtruhe, Uni-Zeit"/>
+      <div class="row" style="flex-wrap:wrap;gap:10px">
+        <div style="flex:1;min-width:120px">
+          <div style="font-size:10px;color:var(--mu);margin-bottom:5px;text-transform:uppercase;letter-spacing:.08em">Von</div>
+          <input type="time" id="sc-start" value="23:00"/>
+        </div>
+        <div style="flex:1;min-width:120px">
+          <div style="font-size:10px;color:var(--mu);margin-bottom:5px;text-transform:uppercase;letter-spacing:.08em">Bis</div>
+          <input type="time" id="sc-end" value="07:00"/>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:10px;color:var(--mu);margin-bottom:6px;text-transform:uppercase;letter-spacing:.08em">Wochentage</div>
+        <div class="days-grid" id="days-grid">
+          <div class="day-btn active" data-d="0" onclick="toggleDay(this)">Mo</div>
+          <div class="day-btn active" data-d="1" onclick="toggleDay(this)">Di</div>
+          <div class="day-btn active" data-d="2" onclick="toggleDay(this)">Mi</div>
+          <div class="day-btn active" data-d="3" onclick="toggleDay(this)">Do</div>
+          <div class="day-btn active" data-d="4" onclick="toggleDay(this)">Fr</div>
+          <div class="day-btn" data-d="5" onclick="toggleDay(this)">Sa</div>
+          <div class="day-btn" data-d="6" onclick="toggleDay(this)">So</div>
+        </div>
+      </div>
+      <button class="primary" onclick="addSchedule()" style="align-self:flex-start">Hinzufügen</button>
+    </div>
+    <div id="schedules-list"><div style="color:var(--mu);font-size:13px">Keine Schlafzeiten.</div></div>
+  </div>
+
+  <div class="card">
+    <div class="ct">Container-Stacks</div>
+    <button onclick="loadStacks()" class="ghost sm" style="margin-bottom:14px">Aktualisieren</button>
+    <div id="stacks-list"><div style="color:var(--mu);font-size:13px">Wird geladen...</div></div>
+  </div>
+</div>
+
+<!-- HILFE -->
+<div id="tab-help" class="panel">
+  <div class="card" style="border-left:3px solid var(--tx)">
+    <div class="ct">Was ist Agent Office?</div>
+    <div style="font-size:14px;line-height:1.8;color:var(--mu)">Ein autonomes KI-Büro auf deinem Homeserver. Agenten arbeiten zusammen, nutzen echtes Tool-Calling, lernen semantisch aus Erfahrungen und verbessern sich selbst. Kein Cloud, keine Fixkosten, CPU-only.</div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div class="card">
+      <div class="ct">Architektur</div>
+      <div style="display:flex;flex-direction:column;gap:10px;font-size:12px;color:var(--mu);line-height:1.6">
+        <div>🧠 <strong style="color:var(--tx)">Tool-Calling</strong> — Agent ruft echte Funktionen auf: web_search, run_python, read/write_file, call_api, ffmpeg_run</div>
+        <div>🔍 <strong style="color:var(--tx)">RAG</strong> — semantische Skill-Suche mit Ollama Embeddings (nomic-embed-text)</div>
+        <div>📊 <strong style="color:var(--tx)">Konfidenz</strong> — Agent bewertet sich selbst 1-10; unter 6 → zweiter Coder automatisch</div>
+        <div>⚖️ <strong style="color:var(--tx)">Debate</strong> — bei Komplexität ≥8 debattieren Coder + Critic zuerst den Ansatz</div>
+        <div>🔗 <strong style="color:var(--tx)">Task-Dependencies</strong> — Aufgaben können von anderen abhängen</div>
+        <div>💾 <strong style="color:var(--tx)">Checkpoints</strong> — bei Neustart wird ab letztem Checkpoint weitergemacht</div>
+        <div>📈 <strong style="color:var(--tx)">Performance-Tracking</strong> — Modell-Routing wird datengetrieben verbessert</div>
+        <div>🧬 <strong style="color:var(--tx)">Agent-Evolution</strong> — System-Prompts verbessern sich nach je 10 Aufgaben</div>
+        <div>🖥️ <strong style="color:var(--tx)">Ressourcen-Monitor</strong> — RAM/CPU-Überwachung, Queue bei Überlast</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="ct">Aufgabe vs. Projekt vs. Chef</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="padding:10px;background:var(--bg3);border-radius:3px;border:1px solid var(--bd)">
+          <div style="font-weight:600;font-size:13px;margin-bottom:4px">💬 Aufgabe</div>
+          <div style="font-size:12px;color:var(--mu)">Direkte Einzelanfrage. Chef bewertet Komplexität, stellt ggf. extra Coder ein. <em>„Schreib ein CSV-Script"</em></div>
+        </div>
+        <div style="padding:10px;background:var(--bg3);border-radius:3px;border:1px solid var(--bd)">
+          <div style="font-weight:600;font-size:13px;margin-bottom:4px">📋 Projekt</div>
+          <div style="font-size:12px;color:var(--mu)">Planner zerlegt in 5 Schritte. <em>„Bau einen Video-Editor"</em></div>
+        </div>
+        <div style="padding:10px;background:var(--bg3);border-radius:3px;border:1px solid var(--bd)">
+          <div style="font-weight:600;font-size:13px;margin-bottom:4px">👨‍💼 Chef-Chat</div>
+          <div style="font-size:12px;color:var(--mu)">Frag ihn was läuft, lass dir Status erklären oder hol dir Empfehlungen.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="card dim" style="text-align:center;padding:24px">
+    <div style="font-size:22px;font-weight:300;letter-spacing:-.02em;margin-bottom:6px">Agent Office</div>
+    <div style="font-size:11px;color:var(--mu);letter-spacing:.08em;text-transform:uppercase">Läuft lokal · CPU-only · Kein Cloud · Open Source</div>
+  </div>
+</div>
+
+</div><!-- #app -->
+
+<script>
+// ── DARK MODE ─────────────────────────────────────────────────────────────────
+function toggleDark(){
+  document.body.classList.toggle('dark');
+  localStorage.setItem('ao-dark',document.body.classList.contains('dark'));
+  document.getElementById('theme-btn').textContent=document.body.classList.contains('dark')?'◑':'◐';
+}
+if(localStorage.getItem('ao-dark')==='true'){
+  document.body.classList.add('dark');
+  document.getElementById('theme-btn').textContent='◑';
+}
+
+// ── PIXEL ART ─────────────────────────────────────────────────────────────────
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+ctx.imageSmoothingEnabled=false;
+const PX=4;
+function px(n){return n*PX;}
+function pxR(x,y,w,h,col){if(!col||col==='T')return;ctx.fillStyle=col;ctx.fillRect(px(x),px(y),px(w),px(h));}
+const C={W1:'#5588cc',W3:'#3366aa',WL:'#6699dd',F1:'#c8a870',F2:'#b89860',F3:'#d8b880',D1:'#8b6e50',D2:'#7a5f42',D3:'#a07a58',DT:'#c8a870',MF:'#2a2a35',MS:'#0a1a2a',MG1:'#1a8a4a',MG2:'#0a6a3a',ML:'#2aaa6a',PP:'#8a5030',P1:'#2a7a20',P2:'#3a9a28',P3:'#1a6018',SK:'#e8c09a',SK2:'#d4a882',EY:'#1a1a2a',H1:'#1a0a08',H2:'#6b3010',H3:'#c8a820',H4:'#a03010',H5:'#303080',S1:'#3a6ab8',S2:'#b83a3a',S3:'#3a9a50',S4:'#8a3ab8',S5:'#c8a820',PT:'#2a3245',PT2:'#1a2535',SH:'#1a1a1a',OL:'#0a0a0a',CA:'#4a6080',CA2:'#3a5070',CA3:'#5a7090',FR:'#cc3333',FW:'#f0f0f0',FB:'#3355cc'};
+const AGENTS=[
+  {name:'Chef',  hair:C.H5,shirt:C.S5,pants:C.PT2,deskX:5,  charX:10,label:'Chef'},
+  {name:'Coder', hair:C.H1,shirt:C.S1,pants:C.PT, deskX:55, charX:60,label:'Coder'},
+  {name:'Critic',hair:C.H2,shirt:C.S2,pants:C.PT, deskX:105,charX:110,label:'Critic'},
+  {name:'Judge', hair:C.H3,shirt:C.S3,pants:C.PT2,deskX:155,charX:160,label:'Judge'},
+  {name:'Planner',hair:C.H4,shirt:C.S4,pants:C.PT,deskX:205,charX:210,label:'Plan'},
+];
+const agState={};let frame=0,sleeping=false;
+const GW=238,GH=70;
+function drawWall(gx,gy,gw,gh){pxR(gx,gy,gw,gh,C.W1);const BW=8,BH=4;for(let row=0;row<gh;row+=BH){const off=(Math.floor(row/BH)%2)*(BW/2);for(let col=-BW;col<gw+BW;col+=BW){ctx.fillStyle=C.W3;ctx.fillRect(px(gx+col+off),px(gy+row+BH-1),px(Math.min(BW,gw-col)),px(1));ctx.fillRect(px(gx+col+off+BW-1),px(gy+row),px(1),px(BH-1));ctx.fillStyle=C.WL;ctx.fillRect(px(gx+col+off),px(gy+row),px(Math.min(BW,gw-col)),px(1));}}}
+function drawFloor(gx,gy,gw,gh){for(let y=gy;y<gy+gh;y++)pxR(gx,y,gw,1,y%2===0?C.F1:C.F2);ctx.fillStyle=C.F3;for(let x=gx;x<gx+gw;x+=12)ctx.fillRect(px(x),px(gy),px(1),px(gh));}
+function drawDesk(gx,gy){pxR(gx,gy,18,2,C.DT);pxR(gx,gy+2,18,5,C.D1);pxR(gx,gy+2,1,5,C.D3);pxR(gx+17,gy+2,1,5,C.D2);pxR(gx+1,gy+7,2,3,C.D2);pxR(gx+15,gy+7,2,3,C.D2);pxR(gx+3,gy-10,10,8,C.MF);pxR(gx+4,gy-9,8,6,C.MS);pxR(gx+5,gy-8,4,1,C.ML);pxR(gx+5,gy-7,6,1,C.MG2);pxR(gx+5,gy-6,3,1,C.MG1);pxR(gx+5,gy-5,5,1,C.MG2);pxR(gx+7,gy-2,2,2,C.MF);pxR(gx+6,gy,4,1,C.MF);pxR(gx+3,gy+1,6,1,C.D2);}
+function drawPlant(gx,gy){pxR(gx+1,gy+6,4,4,C.PP);pxR(gx,gy,3,6,C.P1);pxR(gx+3,gy+1,3,5,C.P2);pxR(gx+1,gy-1,2,2,C.P3);pxR(gx+3,gy-2,2,3,C.P2);}
+function drawChar(gx,gy,hair,shirt,pants,fr,idle,isPaused){
+  ctx.fillStyle='rgba(0,0,0,0.15)';ctx.fillRect(px(gx),px(gy+18),px(8),px(2));
+  pxR(gx+1,gy+1,6,18,C.OL);pxR(gx+2,gy,4,1,hair);pxR(gx+1,gy+1,6,2,hair);
+  pxR(gx+1,gy+3,6,4,C.SK);pxR(gx+2,gy+4,1,1,C.EY);pxR(gx+5,gy+4,1,1,C.EY);
+  pxR(gx+3,gy+6,2,1,C.SK2);pxR(gx+3,gy+7,2,1,C.SK);
+  pxR(gx+1,gy+8,6,5,shirt);pxR(gx+3,gy+8,2,1,C.SK);
+  pxR(gx,gy+8,1,4,C.SK);pxR(gx+7,gy+8,1,4,C.SK);
+  if(idle||isPaused){pxR(gx+2,gy+13,4,3,pants);pxR(gx+1,gy+15,2,2,C.SH);pxR(gx+5,gy+15,2,2,C.SH);
+    if(isPaused){ctx.fillStyle='var(--ye)';ctx.font='bold 7px monospace';ctx.fillText('⏸',px(gx+7),px(gy+2));}
+    else{ctx.fillStyle='var(--mu)';ctx.font='bold 8px monospace';ctx.fillText('z',px(gx+8),px(gy+2));}}
+  else{const leg=fr%4;if(leg<2){pxR(gx+2,gy+13,2,4,pants);pxR(gx+4,gy+13,2,3,pants);pxR(gx+2,gy+17,2,1,C.SH);pxR(gx+4,gy+16,2,1,C.SH);}
+    else{pxR(gx+2,gy+13,2,3,pants);pxR(gx+4,gy+13,2,4,pants);pxR(gx+2,gy+16,2,1,C.SH);pxR(gx+4,gy+17,2,1,C.SH);}}
+}
+function drawScene(){
+  ctx.clearRect(0,0,cv.width,cv.height);
+  if(document.body.classList.contains('dark')){ctx.fillStyle='#0d1117';ctx.fillRect(0,0,cv.width,cv.height);}
+  drawWall(0,0,GW,52);drawFloor(0,52,GW,GH-52);
+  for(let x=8;x<GW;x+=45){pxR(x,0,18,2,'#aaccff');pxR(x,2,18,1,'#8ab0ee');}
+  drawPlant(0,42);drawPlant(GW-8,42);
+  AGENTS.forEach(ag=>{
+    const s=agState[ag.name]||'sleeping';
+    const isWorking=s==='working';const isIdle=s==='idle'||sleeping;
+    drawDesk(ag.deskX,44);
+    if(isWorking){const gf=Math.floor(frame/4)%4;pxR(ag.deskX+8,35,2,1,gf>0?C.ML:C.MG2);pxR(ag.deskX+6,36,6,1,gf>1?C.MG1:C.MG2);}
+    drawChar(ag.charX,ag.charY||20,ag.hair,ag.shirt,ag.pants,isWorking?frame:0,isIdle||!isWorking,false);
+    ctx.fillStyle=document.body.classList.contains('dark')?'#8b949e':'#1a1a1a';
+    ctx.font=`bold ${px(2)}px monospace`;ctx.textAlign='center';
+    ctx.fillText(ag.label,px(ag.charX+4),px((ag.charY||20)-3));
+    const dc=isWorking?'#3fb950':isIdle?'#d29922':'#8a8680';
+    ctx.fillStyle=dc;ctx.beginPath();ctx.arc(px(ag.charX+7),px((ag.charY||20)-4),px(1.5),0,Math.PI*2);ctx.fill();
+  });
+  if(sleeping){ctx.fillStyle='rgba(200,190,160,0.2)';ctx.fillRect(0,0,cv.width,cv.height);ctx.fillStyle='#d29922';ctx.font=`bold 12px 'Segoe UI'`;ctx.textAlign='center';ctx.letterSpacing='0.1em';ctx.fillText('SCHLAFMODUS',cv.width/2,cv.height-12);ctx.letterSpacing='0';}
+  ctx.textAlign='left';frame++;requestAnimationFrame(drawScene);
+}
+drawScene();
+
+// ── DRAG & DROP ───────────────────────────────────────────────────────────────
+let dragCounter=0;
+const overlay=document.getElementById('drop-overlay');
+window.addEventListener('dragenter',e=>{e.preventDefault();dragCounter++;overlay.style.display='flex';});
+window.addEventListener('dragleave',e=>{dragCounter--;if(dragCounter<=0){dragCounter=0;overlay.style.display='none';}});
+window.addEventListener('dragover',e=>e.preventDefault());
+window.addEventListener('drop',async e=>{
+  e.preventDefault();dragCounter=0;overlay.style.display='none';
+  const f=e.dataTransfer.files[0];if(!f||!connected){addMsg('Erst verbinden.','sys');return;}
+  await uploadFileObj(f);
+});
+window.addEventListener('paste',async e=>{
+  const img=[...e.clipboardData.items].find(i=>i.type.startsWith('image/'));if(!img)return;
+  if(!connected){addMsg('Erst verbinden.','sys');return;}
+  const file=img.getAsFile();
+  const renamed=new File([file],`clipboard_${Date.now()}.png`,{type:file.type});
+  addMsg('Screenshot eingefügt…','sys');await uploadFileObj(renamed);
+});
+
+async function uploadFileObj(file){
+  const instr=document.getElementById('file-instr')?.value?.trim()||'';
+  const fd=new FormData();fd.append('file',file);if(instr)fd.append('instruction',instr);
+  await fetch(srv+'/files/upload',{method:'POST',body:fd});
+  addMsg(sleeping?`${file.name} wartet.`:`${file.name} → Inbox.`,'sys');
+  loadFiles();
+}
+
+// ── CORE ──────────────────────────────────────────────────────────────────────
+let connected=false,srv='',pollId=null,currentPrio=2;
+
+function setPrio(p){
+  currentPrio=p;
+  [1,2,3].forEach(n=>{
+    const b=document.getElementById(`prio-${n}`);if(!b)return;
+    b.style.fontWeight=n===p?'700':'400';b.style.opacity=n===p?'1':'0.55';
+  });
+}
+
+function sw(id,el){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  el.classList.add('active');document.getElementById('tab-'+id).classList.add('active');
+  if(id==='tools') loadTools();
+  if(id==='updates') loadUpdates();
+  if(id==='skills') loadSkills();
+  if(id==='projects'){loadProjects();loadTemplates();}
+  if(id==='files') loadFiles();
+  if(id==='tasks'){loadTaskList();loadQuickButtons();}
+  if(id==='office') loadRoster();
+  if(id==='settings'){loadSchedules();loadStacks();loadThinkingMode();loadPromptEditors();}
+}
+
+async function doConnect(){
+  srv=document.getElementById('surl').value.trim();
+  const st=document.getElementById('cstat');
+  try{
+    const r=await fetch(srv+'/status');
+    if(r.ok){
+      connected=true;st.textContent='Online';st.style.color='var(--gr)';
+      addMsg('Verbunden.','sys');
+      addChefMsg('Guten Tag! Server verbunden. Womit kann ich helfen?','bot');
+      loadQuickButtons();loadTemplates();startPoll();
+    }
+  }catch(e){st.textContent='Fehler';st.style.color='var(--re)';addMsg('Verbindungsfehler.','sys');}
+}
+
+function startPoll(){
+  if(pollId) clearInterval(pollId);
+  pollId=setInterval(async()=>{
+    try{
+      const [sr,tr]=await Promise.all([fetch(srv+'/status'),fetch(srv+'/tasks')]);
+      const sd=await sr.json(),td=await tr.json();
+      updateAgents(sd.agents,sd.sleep_mode);
+      sleeping=sd.sleep_mode;
+      document.getElementById('sleep-banner').style.display=sleeping?'flex':'none';
+      if(sleeping) document.getElementById('queued-count').textContent=`${sd.queued_tasks||0} wartend`;
+
+      // ── RAM-Anzeige ──────────────────────────────────────────────────────
+      const res=sd.resources||{};
+      const ramEl=document.getElementById('ram-indicator');
+      if(ramEl){
+        const pct=res.ram_pct||0;
+        ramEl.textContent=`RAM ${pct}%${res.cpu_pct?` · CPU ${res.cpu_pct}%`:''}`;
+        ramEl.style.color=res.warning?'var(--re)':'var(--mu)';
+        ramEl.style.borderColor=res.warning?'var(--re)':'var(--bd)';
+        ramEl.style.background=res.warning?'color-mix(in srgb,var(--re) 10%,transparent)':'var(--bg3)';
+        if(res.warning) addMsg('⚠️ RAM-Warnung: Server ausgelastet. Neue Aufgaben warten in Queue.','sys');
+      }
+
+      td.filter(t=>t.status==='done'&&!t._shown).forEach(t=>{
+        t._shown=true;
+        const conf=t.confidence?` · Konfidenz: ${t.confidence}/10`:'';
+        addMsg(`✓ ${t.title?.substring(0,55)}${conf}`,'bot');
+      });
+      setBadge('utab',sd.pending_updates>0);
+      setBadge('ttab',sd.pending_tool_requests>0);
+
+      if(sd.active_tasks?.length>=3){
+        const sm=await fetch(srv+'/tasks/summary').then(r=>r.json()).catch(()=>({summary:''}));
+        const box=document.getElementById('task-summary-box');
+        if(sm.summary&&box){box.style.display='block';box.textContent=`📋 ${sm.summary}`;}
+      }
+    }catch(e){}
+  },4000);
+}
+
+function setBadge(id,show){
+  const b=document.getElementById(id);if(!b)return;
+  const d=b.querySelector('.bdot');
+  if(show&&!d){const x=document.createElement('div');x.className='bdot';b.appendChild(x);}
+  else if(!show&&d) d.remove();
+}
+
+function updateAgents(agents,sm){
+  const list=document.getElementById('ag-list');if(!list)return;
+  list.innerHTML='';
+  agents.forEach(a=>{
+    agState[a.name]=a.status;
+    const dc=a.status==='working'?'var(--gr)':a.status==='idle'?'var(--ye)':'var(--bd2)';
+    const label=a.status==='idle'?'schläft':a.status==='working'?'arbeitet':'wartet';
+    const bs=a.status==='working'?'b-run':a.status==='idle'?'b-stop':'b-pend';
+    list.innerHTML+=`<div class="ag-row"><div class="ag-dot" style="background:${dc}"></div><div class="ag-name">${a.name}</div><div class="ag-task">${a.status==='working'?a.current_task:'—'}</div><span class="badge ${bs}">${label}</span></div>`;
+  });
+}
+
+// ── ROSTER ────────────────────────────────────────────────────────────────────
+async function loadRoster(){
+  if(!connected)return;
+  const [rr,mr]=await Promise.all([fetch(srv+'/agents/roster'),fetch(srv+'/agents/messages')]);
+  const roster=await rr.json(),msgs=await mr.json();
+  const roleColor={chef:'var(--ye)',coder:'var(--ac)',critic:'var(--re)',judge:'var(--gr)',planner:'var(--pu)'};
+  document.getElementById('roster-list').innerHTML=roster.map(a=>`
+    <div class="ag-row">
+      <div class="ag-dot" style="background:${a.status==='active'?roleColor[a.role]||'var(--bd2)':'var(--mu2)'}"></div>
+      <div class="ag-name" style="${a.status==='retired'?'color:var(--mu2)':''}">${a.name}</div>
+      <div class="ag-task">${a.specialization}</div>
+      <span class="badge ${a.status==='active'?'b-run':'b-pend'}">${a.tasks_completed}✓</span>
+      ${a.status==='active'&&!['Chef','Coder','Critic','Judge','Planner'].includes(a.name)
+        ?`<button class="xs danger" onclick="retireAgent('${a.name}')">Entlassen</button>`:''}
+    </div>`).join('');
+  const typeIcon={context_share:'💬',help_request:'❓',result_ready:'✓',review_done:'🔍',
+    cross_check_done:'⚖️',revision_needed:'↩️',debate_start:'⚡',debate_result:'🎯',
+    status:'ℹ️'};
+  document.getElementById('msg-count').textContent=msgs.length?`${msgs.length} Nachrichten`:'';
+  document.getElementById('agent-msgs').innerHTML=msgs.length?msgs.slice(0,15).map(m=>`
+    <div class="agent-comm">
+      <span style="font-size:14px;flex-shrink:0">${typeIcon[m.message_type]||'·'}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:11px;color:var(--mu);margin-bottom:2px">
+          <strong style="color:var(--tx)">${m.from_agent}</strong> → ${m.to_agent}
+          <span style="margin-left:8px;opacity:.6">${m.created_at?.substring(11,16)}</span>
+        </div>
+        <div style="font-size:12px;color:var(--tx);line-height:1.5">${m.content?.substring(0,130)}</div>
+      </div>
+    </div>`).join(''):'<div style="color:var(--mu);font-size:13px">Noch keine Nachrichten.</div>';
+}
+
+async function manualHire(){
+  const spec=document.getElementById('hire-spec').value.trim();if(!spec||!connected)return;
+  const r=await fetch(srv+'/agents/hire',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({role:'coder',specialization:spec})});
+  const d=await r.json();addMsg(`Eingestellt: ${d.name}`,'sys');
+  document.getElementById('hire-spec').value='';loadRoster();
+}
+async function retireAgent(name){
+  if(!confirm(`${name} entlassen?`))return;
+  await fetch(srv+'/agents/'+name+'/retire',{method:'POST'});loadRoster();
+}
+
+// ── THINKING MODE ─────────────────────────────────────────────────────────────
+async function loadThinkingMode(){
+  if(!connected)return;
+  const r=await fetch(srv+'/settings').catch(()=>({ok:false}));
+  if(!r.ok)return;
+  const d=await r.json();updateThinkingButtons(d.thinking_mode||'auto');
+}
+function updateThinkingButtons(mode){
+  ['off','auto','on'].forEach(m=>{
+    const b=document.getElementById('tm-'+m);if(!b)return;
+    b.classList.toggle('selected',m===mode);
+  });
+}
+async function setThinkingMode(mode){
+  if(!connected)return;
+  await fetch(srv+'/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({thinking_mode:mode})});
+  updateThinkingButtons(mode);
+  const labels={off:'Aus – direkt antworten',auto:'Auto – Agent entscheidet',on:'An – immer CoT + Deep Research'};
+  addMsg(`🧠 Thinking-Modus: ${labels[mode]}`,'sys');
+}
+
+// ── PROMPT EDITORS ────────────────────────────────────────────────────────────
+async function loadPromptEditors(){
+  if(!connected)return;
+  const r=await fetch(srv+'/agents/roster').catch(()=>({ok:false}));
+  if(!r.ok)return;
+  const roster=await r.json();
+  const agents=roster.filter(a=>['Chef','Coder','Critic','Judge','Planner'].includes(a.name));
+  document.getElementById('prompt-editor').innerHTML=agents.map(a=>`
+    <div style="background:var(--bg3);border:1px solid var(--bd);border-radius:3px;padding:12px">
+      <div style="font-size:11px;font-weight:600;color:var(--mu);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">${a.name}</div>
+      <textarea id="prompt-${a.name}" style="min-height:64px;font-size:12px">${a.system_prompt||''}</textarea>
+      <button class="sm ghost" onclick="savePrompt('${a.name}')" style="margin-top:6px">Speichern</button>
+    </div>`).join('');
+}
+async function savePrompt(name){
+  const prompt=document.getElementById(`prompt-${name}`)?.value||'';
+  await fetch(srv+'/agents/'+name+'/prompt',{method:'PUT',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({prompt})});
+  addMsg(`Prompt für ${name} gespeichert.`,'sys');
+}
+
+// ── QUICK BUTTONS ─────────────────────────────────────────────────────────────
+async function loadQuickButtons(){
+  if(!connected)return;
+  const r=await fetch(srv+'/quick-tasks').catch(()=>({ok:false}));if(!r.ok)return;
+  const tasks=await r.json();
+  const grid=document.getElementById('quick-grid');if(!grid)return;
+  grid.innerHTML=tasks.map(t=>`
+    <button class="quick-btn" onclick="sendQuickTask('${t.prompt.replace(/'/g,"\\'")}')">
+      <span class="quick-icon">${t.icon}</span>${t.label}
+    </button>`).join('');
+}
+async function sendQuickTask(prompt){
+  if(!connected){addMsg('Erst verbinden.','sys');return;}
+  addMsg(prompt,'user');
+  const r=await fetch(srv+'/task',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({title:prompt,priority:currentPrio})});
+  const d=await r.json();
+  addMsg(d.queued?'Wartet (RAM-Limit oder Schlafmodus).':'Aufgabe gestartet…','sys');
+  loadTaskList();
+}
+
+// ── TASK LIST ─────────────────────────────────────────────────────────────────
+async function loadTaskList(){
+  if(!connected)return;
+  const r=await fetch(srv+'/tasks');const tasks=await r.json();
+  const active=tasks.filter(t=>['pending','queued','running'].includes(t.status)||t.paused);
+  const list=document.getElementById('task-list');if(!list)return;
+  if(!active.length){list.innerHTML='<div style="color:var(--mu);font-size:13px">Keine aktiven Aufgaben.</div>';return;}
+  list.innerHTML=active.map(t=>{
+    const isPaused=t.paused;
+    const bs=t.status==='running'?'b-run':isPaused?'b-pause':t.status==='queued'?'b-stop':'b-pend';
+    const statusLabel=t.status==='running'?'läuft':isPaused?'pausiert':t.status==='queued'?'wartet':'ausstehend';
+    const conf=t.confidence?`<span style="font-size:10px;color:${t.confidence<6?'var(--re)':'var(--mu)'}">⬤ ${t.confidence}/10</span>`:'';
+    return `<div class="task-row">
+      <div class="task-prio prio-${t.priority||2}"></div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.title}</div>
+        <div style="font-size:11px;color:var(--mu);margin-top:2px;display:flex;gap:8px">
+          <span>${t.created_at?.substring(0,16)||''}</span>
+          ${t.model_used?`<span>${t.model_used}</span>`:''}
+          ${conf}
+        </div>
+      </div>
+      <span class="badge ${bs}">${statusLabel}</span>
+      <button class="xs ghost" onclick="pauseTask(${t.id})">${isPaused?'▶ Weiter':'⏸'}</button>
+      <button class="xs" onclick="setTaskPrio(${t.id},1)" style="border-color:var(--re);color:var(--re)">↑</button>
+      <button class="xs" onclick="setTaskPrio(${t.id},3)">↓</button>
+      <button class="xs danger" onclick="cancelTask(${t.id})">✕</button>
+    </div>`;
+  }).join('');
+}
+async function pauseTask(id){await fetch(srv+'/tasks/'+id+'/pause',{method:'POST'});loadTaskList();}
+async function cancelTask(id){if(!confirm('Aufgabe abbrechen?'))return;await fetch(srv+'/tasks/'+id+'/cancel',{method:'POST'});loadTaskList();}
+async function setTaskPrio(id,p){await fetch(srv+'/tasks/'+id+'/priority',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({priority:p})});loadTaskList();}
+
+// ── CHEF CHAT ─────────────────────────────────────────────────────────────────
+let chefHistory=[];
+function addChefMsg(text,role){
+  const box=document.getElementById('chef-messages');if(!box)return;
+  const isUser=role==='user';
+  const d=document.createElement('div');d.className='chef-msg'+(isUser?' user':'');
+  d.innerHTML=`<div class="chef-avatar ${role}">${isUser?'Du':'C'}</div>
+    <div><div class="chef-name">${isUser?'Du':'Chef'}</div>
+    <div class="chef-bubble ${role}">${text.replace(/\n/g,'<br>')}</div></div>`;
+  box.appendChild(d);box.scrollTop=box.scrollHeight;
+}
+function showTyping(){
+  const box=document.getElementById('chef-messages');if(!box)return;
+  const d=document.createElement('div');d.className='chef-msg';d.id='chef-typing';
+  d.innerHTML=`<div class="chef-avatar bot">C</div><div><div class="chef-name">Chef</div><div class="chef-bubble bot"><div class="chef-typing"><span></span><span></span><span></span></div></div></div>`;
+  box.appendChild(d);box.scrollTop=box.scrollHeight;
+}
+function hideTyping(){const t=document.getElementById('chef-typing');if(t)t.remove();}
+async function sendChef(){
+  const inp=document.getElementById('chef-input');
+  const txt=inp.value.trim();if(!txt)return;
+  if(!connected){addChefMsg('Bitte erst verbinden.','bot');return;}
+  inp.value='';chefHistory.push({role:'user',content:txt});addChefMsg(txt,'user');showTyping();
+  try{
+    const r=await fetch(srv+'/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({messages:chefHistory})});
+    const d=await r.json();hideTyping();
+    const resp=d.response||'Keine Antwort.';
+    chefHistory.push({role:'assistant',content:resp});
+    if(chefHistory.length>20) chefHistory=chefHistory.slice(-20);
+    addChefMsg(resp,'bot');
+  }catch(e){hideTyping();addChefMsg('Verbindungsfehler.','bot');}
+}
+document.getElementById('chef-input').addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChef();}
+});
+
+// ── SEND TASK ─────────────────────────────────────────────────────────────────
+async function sendTask(){
+  const inp=document.getElementById('tinput');const txt=inp.value.trim();
+  if(!txt||!connected)return;inp.value='';addMsg(txt,'user');
+  const r=await fetch(srv+'/task',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({title:txt,priority:currentPrio})});
+  const d=await r.json();
+  addMsg(d.queued?'Wartet (RAM oder Schlafmodus).':'Aufgabe läuft…','sys');loadTaskList();
+}
+async function modifyUI(){
+  const inp=document.getElementById('uiinput');const txt=inp.value.trim();
+  if(!txt||!connected)return;inp.value='';
+  await fetch(srv+'/ui/modify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({instruction:txt})});
+  addMsg('UI-Änderung eingereicht. Seite nach ~2 Min neu laden.','sys');
+}
+
+// ── TEMPLATES ─────────────────────────────────────────────────────────────────
+let selectedTemplate=null;
+const catIcons={video:'▶',code:'⌨',game:'◉',audio:'♪',automation:'⚙',general:'◈'};
+async function loadTemplates(){
+  if(!connected)return;
+  const r=await fetch(srv+'/templates').catch(()=>({ok:false}));if(!r.ok)return;
+  const templates=await r.json();
+  const grid=document.getElementById('template-grid');if(!grid)return;
+  grid.innerHTML=templates.map(t=>`
+    <button class="tpl-btn" id="tpl-${t.id}" onclick="selectTemplate(${t.id},'${t.name.replace(/'/g,"\\'")}',${JSON.stringify(JSON.stringify(t.steps))})">
+      ${catIcons[t.category]||'◈'} ${t.name}
+    </button>`).join('');
+}
+function selectTemplate(id,name,stepsJson){
+  selectedTemplate={id,name,steps:JSON.parse(stepsJson)};
+  document.getElementById('pname').value=name;
+  document.getElementById('clear-tpl').style.display='inline-flex';
+  document.querySelectorAll('[id^="tpl-"]').forEach(el=>el.classList.remove('selected'));
+  document.getElementById(`tpl-${id}`)?.classList.add('selected');
+}
+function clearTemplate(){
+  selectedTemplate=null;document.getElementById('clear-tpl').style.display='none';
+  document.getElementById('pname').value='';
+  document.querySelectorAll('[id^="tpl-"]').forEach(el=>el.classList.remove('selected'));
+}
+
+// ── PROJECTS ──────────────────────────────────────────────────────────────────
+async function loadProjects(){
+  if(!connected)return;
+  const r=await fetch(srv+'/projects');const ps=await r.json();
+  const list=document.getElementById('proj-list');if(!list)return;list.innerHTML='';
+  if(!ps.length){list.innerHTML='<div style="color:var(--mu);font-size:13px;padding:4px">Noch keine Projekte.</div>';return;}
+  ps.forEach(p=>{
+    const pct=p.total_steps?Math.round(p.progress/p.total_steps*100):0;
+    const bs={'planning':'b-plan','running':'b-run','done':'b-done','cancelled':'b-can'}[p.status]||'b-pend';
+    const sh=(p.steps||[]).map(s=>`<div class="step"><div class="sic ${s.status}">${s.status==='done'?'✓':s.status==='running'?'▶':s.status==='cancelled'?'✕':''}</div><span style="color:${s.status==='done'?'var(--mu)':s.status==='running'?'var(--tx)':'var(--mu2)'}">${s.title}</span></div>`).join('');
+    const cb=p.status!=='done'&&p.status!=='cancelled'?`<button class="danger sm" onclick="cancelProject(${p.id})">Abbrechen</button>`:'';
+    list.innerHTML+=`<div class="proj-card"><div class="row"><div style="flex:1;font-weight:600;font-size:14px">${p.name}</div><span class="badge ${bs}">${p.status}</span>${cb}</div><div class="prog"><div class="prog-f" style="width:${pct}%"></div></div><div style="font-size:11px;color:var(--mu)">${p.progress}/${p.total_steps} Schritte</div><div style="margin-top:4px">${sh}</div></div>`;
+  });
+}
+async function createProject(){
+  if(!connected)return;
+  const name=document.getElementById('pname').value.trim();
+  const desc=document.getElementById('pdesc').value.trim();if(!name)return;
+  const body={name,description:desc};
+  if(selectedTemplate) body.template_steps=selectedTemplate.steps;
+  document.getElementById('pname').value='';document.getElementById('pdesc').value='';clearTemplate();
+  await fetch(srv+'/project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  addMsg(sleeping?`Projekt "${name}" wartet.`:`Projekt "${name}" gestartet.`,'sys');
+  sw('projects',document.querySelectorAll('.tab')[3]);
+}
+async function cancelProject(id){await fetch(srv+'/project/'+id+'/cancel',{method:'POST'});loadProjects();}
+
+// ── FILES ─────────────────────────────────────────────────────────────────────
+const FI={video:'▶',audio:'♪',image:'◻',code:'⌨',text:'≡',doc:'⊞',other:'◈'};
+function fmtSize(b){if(b<1024)return b+'B';if(b<1048576)return(b/1024).toFixed(1)+'KB';return(b/1048576).toFixed(1)+'MB';}
+async function loadFiles(){
+  if(!connected)return;
+  const [ir,or,wr]=await Promise.all([fetch(srv+'/files/inbox'),fetch(srv+'/files/outbox'),fetch(srv+'/files/workspace')]);
+  const inbox=await ir.json(),outbox=await or.json(),ws=await wr.json();
+  document.getElementById('inbox-count').textContent=inbox.length?`${inbox.length} Dateien`:'';
+  document.getElementById('outbox-count').textContent=outbox.length?`${outbox.length} Dateien`:'';
+  document.getElementById('inbox-list').innerHTML=inbox.length?inbox.map(f=>`<div class="file-row"><div style="font-size:16px;width:22px">${FI[f.type]||'◈'}</div><div style="flex:1"><div style="font-weight:500;font-size:13px">${f.name}</div><div style="font-size:11px;color:var(--mu)">${fmtSize(f.size)} · ${f.modified?.substring(0,16)}</div></div><span class="badge ${f.processed?'b-done':'b-pend'}">${f.processed?'erledigt':'ausstehend'}</span><button class="danger sm" onclick="deleteInbox('${f.name}')">✕</button></div>`).join(''):'<div style="color:var(--mu);font-size:13px">Leer.</div>';
+  document.getElementById('outbox-list').innerHTML=outbox.length?outbox.map(f=>`<div class="file-row"><div style="font-size:16px;width:22px">${FI[f.type]||'◈'}</div><div style="flex:1"><div style="font-weight:500;font-size:13px">${f.name}</div><div style="font-size:11px;color:var(--mu)">${fmtSize(f.size)} · ${f.modified?.substring(0,16)}</div></div><a href="${srv}/files/outbox/${encodeURIComponent(f.name)}" download="${f.name}"><button class="ok sm">↓</button></a><button class="danger sm" onclick="deleteOutbox('${f.name}')">✕</button></div>`).join(''):'<div style="color:var(--mu);font-size:13px">Noch keine.</div>';
+  document.getElementById('workspace-list').innerHTML=ws.length?ws.map(f=>`<div class="file-row"><div style="font-size:16px;width:22px;color:var(--mu)">⚙</div><div style="flex:1"><div style="font-size:13px;color:var(--mu)">${f.name}</div><div style="font-size:11px;color:var(--mu2)">${fmtSize(f.size)}</div></div></div>`).join(''):'<div style="color:var(--mu);font-size:13px">Leer.</div>';
+}
+async function uploadFile(input){const file=input.files[0];if(!file||!connected)return;await uploadFileObj(file);input.value='';}
+async function deleteInbox(name){await fetch(srv+'/files/inbox/'+encodeURIComponent(name),{method:'DELETE'});loadFiles();}
+async function deleteOutbox(name){await fetch(srv+'/files/outbox/'+encodeURIComponent(name),{method:'DELETE'});loadFiles();}
+
+// ── SKILLS ────────────────────────────────────────────────────────────────────
+async function loadSkills(){
+  if(!connected)return;
+  const [sr,ir,tr,pr,perfr]=await Promise.all([
+    fetch(srv+'/skills'),fetch(srv+'/improvements'),
+    fetch(srv+'/tasks'),fetch(srv+'/projects'),
+    fetch(srv+'/model-performance')]);
+  const sk=await sr.json(),im=await ir.json(),td=await tr.json(),pd=await pr.json(),perf=await perfr.json();
+  document.getElementById('st-t').textContent=td.filter(t=>t.status==='done').length;
+  document.getElementById('st-p').textContent=pd.length;
+  document.getElementById('st-s').textContent=sk.length;
+  document.getElementById('st-i').textContent=im.length;
+  document.getElementById('perf-list').innerHTML=perf.length?perf.map(p=>`
+    <div class="perf-row">
+      <div style="min-width:80px;font-size:12px;font-weight:500">${p.model}</div>
+      <div style="font-size:11px;color:var(--mu);min-width:60px">${p.task_type}</div>
+      <div style="flex:1;background:var(--bg3);border-radius:3px;height:6px;overflow:hidden">
+        <div class="perf-bar" style="width:${p.avg_quality*10}%;background:${p.avg_quality>=7?'var(--gr)':p.avg_quality>=5?'var(--ye)':'var(--re)'}"></div>
+      </div>
+      <div style="font-size:11px;color:var(--mu);min-width:60px;text-align:right">${p.avg_quality}/10 · ${p.count}x</div>
+    </div>`).join(''):'<div style="color:var(--mu);font-size:13px">Noch keine Daten.</div>';
+  document.getElementById('skills-list').innerHTML=sk.length?sk.map(s=>`
+    <div class="skill-chip" title="${s.how_to?.substring(0,200)||s.description}">
+      <span style="font-weight:600">${s.name}</span>
+      <span style="color:var(--mu);font-size:10px">v${s.version} · ${s.success_count}✓${s.failure_count>0?' '+s.failure_count+'✗':''}</span>
+      <button class="xs danger" onclick="deleteSkill(${s.id})" style="padding:2px 6px;margin-left:2px">✕</button>
+    </div>`).join(''):'<div style="color:var(--mu);font-size:13px">Noch keine.</div>';
+  document.getElementById('impr-list').innerHTML=im.length?im.slice(-5).reverse().map(i=>`
+    <div style="font-size:13px;color:var(--mu);padding:12px;background:var(--bg3);border-radius:3px;border:1px solid var(--bd);line-height:1.6">
+      <div style="font-size:10px;color:var(--mu2);margin-bottom:4px;text-transform:uppercase;letter-spacing:.06em">${i.applied_at?.substring(0,16)}</div>
+      ${i.summary}
+    </div>`).join(''):'<div style="color:var(--mu);font-size:13px">Kein Log.</div>';
+}
+async function deleteSkill(id){if(!confirm('Skill löschen?'))return;await fetch(srv+'/skills/'+id,{method:'DELETE'});loadSkills();}
+
+// ── TOOLS ─────────────────────────────────────────────────────────────────────
+async function loadTools(){
+  if(!connected)return;
+  const [tr,rr]=await Promise.all([fetch(srv+'/tools'),fetch(srv+'/tool-requests')]);
+  const tools=await tr.json(),reqs=await rr.json();
+  const sc={'running':'var(--gr)','stopped':'var(--ye)','not_installed':'var(--re)','unknown':'var(--bd2)'};
+  const sl={'running':'läuft','stopped':'gestoppt','not_installed':'nicht installiert','unknown':'unbekannt'};
+  document.getElementById('tools-list').innerHTML=tools.length?tools.map(t=>`
+    <div class="tool-row">
+      <div style="width:8px;height:8px;border-radius:50%;background:${sc[t.status]||'var(--bd2)'};flex-shrink:0"></div>
+      <div style="flex:1"><div style="font-weight:500;font-size:13px">${t.name}</div>
+        <div style="font-size:11px;color:var(--mu)">${t.description}${t.api_url?' · '+t.api_url:''}${t.stack_name?' · '+t.stack_name:''}</div>
+      </div>
+      <span class="badge b-pend" style="color:${sc[t.status]}">${sl[t.status]||t.status}</span>
+      ${t.status==='stopped'?`<button class="sm" onclick="ctrlTool('${t.name}','start')">▶</button>`:''}
+      ${t.status==='running'&&t.auto_stop?`<button class="sm" onclick="ctrlTool('${t.name}','stop')">■</button>`:''}
+    </div>`).join(''):'<div style="color:var(--mu);font-size:13px">Keine.</div>';
+  const pend=reqs.filter(r=>r.status==='pending');
+  document.getElementById('treq-list').innerHTML=pend.length?pend.map(r=>`
+    <div style="padding:12px;background:var(--bg3);border:1px solid var(--bd);border-radius:3px;margin-bottom:8px">
+      <div class="row" style="margin-bottom:8px">
+        <div style="flex:1"><div style="font-weight:500">${r.tool_name}</div><div style="font-size:11px;color:var(--mu)">${r.reason}</div></div>
+        <button class="ok sm" onclick="handleReq(${r.id},'approve')">✓</button>
+        <button class="danger sm" onclick="handleReq(${r.id},'reject')">✕</button>
+      </div>
+      <div style="font-size:11px;color:var(--mu);padding:8px;background:var(--bg);border-radius:3px;border:1px solid var(--bd)">${r.install_hint||'Portainer → Stacks → + Add Stack'}</div>
+    </div>`).join(''):'<div style="color:var(--mu);font-size:13px">Keine Anfragen.</div>';
+  setBadge('ttab',pend.length>0);
+}
+async function ctrlTool(name,action){await fetch(srv+'/tools/'+name+'/'+action,{method:'POST'});setTimeout(loadTools,2000);}
+async function addTool(){
+  const name=document.getElementById('tn').value.trim();if(!name||!connected)return;
+  await fetch(srv+'/tools',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,api_url:document.getElementById('tu').value.trim(),container_pattern:document.getElementById('tp').value.trim()||name,stack_name:document.getElementById('ts').value.trim(),auto_stop:true})});
+  ['tn','tu','tp','ts'].forEach(id=>document.getElementById(id).value='');setTimeout(loadTools,500);
+}
+async function handleReq(id,action){await fetch(srv+'/tool-requests/'+id+'/'+action,{method:'POST'});loadTools();}
+
+// ── UPDATES ───────────────────────────────────────────────────────────────────
+async function loadUpdates(){
+  if(!connected)return;
+  const r=await fetch(srv+'/updates');const updates=await r.json();
+  const pend=updates.filter(u=>u.status==='pending');
+  const hist=updates.filter(u=>u.status!=='pending');
+  const sc={approved:'var(--gr)',rejected:'var(--re)',pending:'var(--ye)'};
+  document.getElementById('upd-pend-card').style.borderColor=pend.length?'var(--ye)':'var(--bd)';
+  document.getElementById('upd-pend').innerHTML=pend.length?pend.map(u=>`
+    <div class="upd-card">
+      <div class="row" style="margin-bottom:6px">
+        <span style="font-weight:600;flex:1">${u.title}</span>
+        <span style="font-size:10px;color:var(--mu);text-transform:uppercase">${u.proposed_by} · ${u.created_at?.substring(0,16)}</span>
+      </div>
+      <div style="font-size:13px;color:var(--mu);margin-bottom:12px;line-height:1.6">${u.description}</div>
+      ${u.new_code?`<details style="margin-bottom:12px"><summary style="font-size:11px;cursor:pointer;text-transform:uppercase;letter-spacing:.04em">Code-Vorschau</summary><pre>${u.new_code.substring(0,900)}</pre></details>`:''}
+      <div class="row">
+        <button class="primary sm" onclick="handleUpd(${u.id},'approve')">✓ Genehmigen & Neustart</button>
+        <button class="danger sm" onclick="handleUpd(${u.id},'reject')">✕ Ablehnen</button>
+      </div>
+    </div>`).join(''):'<div style="color:var(--mu);font-size:13px">Keine.</div>';
+  document.getElementById('upd-hist').innerHTML=hist.length?hist.slice(-10).reverse().map(u=>`
+    <div class="row" style="padding:10px 0;border-bottom:1px solid var(--bd)">
+      <div style="width:6px;height:6px;border-radius:50%;background:${sc[u.status]||'var(--bd2)'};flex-shrink:0"></div>
+      <div style="flex:1;font-size:13px">${u.title}</div>
+      <span style="font-size:10px;color:var(--mu)">${u.proposed_by}</span>
+      <span style="font-size:10px;color:${sc[u.status]||'var(--mu)'};text-transform:uppercase">${u.status}</span>
+    </div>`).join(''):'<div style="color:var(--mu);font-size:13px">Kein Verlauf.</div>';
+  setBadge('utab',pend.length>0);
+}
+async function handleUpd(id,action){
+  if(action==='approve'&&!confirm('Server startet neu (~10s). Fortfahren?'))return;
+  await fetch(srv+'/updates/'+id+'/'+action,{method:'POST'});
+  if(action==='approve')addMsg('Update genehmigt. Neustart…','sys');
+  setTimeout(loadUpdates,1000);
+}
+async function proposeUpdate(){
+  const title=document.getElementById('ut').value.trim();const desc=document.getElementById('ud').value.trim();
+  if(!title||!connected)return;
+  await fetch(srv+'/updates/propose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,description:desc,proposed_by:'Du'})});
+  document.getElementById('ut').value='';document.getElementById('ud').value='';setTimeout(loadUpdates,500);
+}
+
+// ── SCHEDULES ─────────────────────────────────────────────────────────────────
+const DAYS=['Mo','Di','Mi','Do','Fr','Sa','So'];
+function toggleDay(el){el.classList.toggle('active');}
+async function addSchedule(){
+  if(!connected)return;
+  const name=document.getElementById('sc-name').value.trim();if(!name)return;
+  const activeDays=[...document.querySelectorAll('.day-btn.active')].map(d=>d.dataset.d).join(',');
+  if(!activeDays){alert('Mindestens einen Tag wählen.');return;}
+  await fetch(srv+'/schedules',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name,weekdays:activeDays,start_time:document.getElementById('sc-start').value,end_time:document.getElementById('sc-end').value,active:true})});
+  document.getElementById('sc-name').value='';loadSchedules();
+}
+async function loadSchedules(){
+  if(!connected)return;
+  const r=await fetch(srv+'/schedules');const sc=await r.json();
+  const list=document.getElementById('schedules-list');if(!list)return;
+  if(!sc.length){list.innerHTML='<div style="color:var(--mu);font-size:13px">Keine Schlafzeiten.</div>';return;}
+  list.innerHTML=sc.map(s=>`
+    <div class="sched-row">
+      <label class="toggle"><input type="checkbox" ${s.active?'checked':''} onchange="toggleSchedule(${s.id})"><div class="t-track"></div><div class="t-thumb"></div></label>
+      <div style="flex:1"><div style="font-weight:500;font-size:13px;${!s.active?'color:var(--mu)':''}">${s.name}</div>
+        <div style="font-size:11px;color:var(--mu)">${s.start_time} – ${s.end_time} · ${s.weekdays.split(',').map(d=>DAYS[parseInt(d)]||d).join(', ')}</div>
+      </div>
+      <span class="badge ${s.active?'b-stop':'b-pend'}">${s.active?'aktiv':'inaktiv'}</span>
+      <button class="danger sm" onclick="deleteSchedule(${s.id})">✕</button>
+    </div>`).join('');
+}
+async function toggleSchedule(id){await fetch(srv+'/schedules/'+id+'/toggle',{method:'POST'});loadSchedules();}
+async function deleteSchedule(id){await fetch(srv+'/schedules/'+id,{method:'DELETE'});loadSchedules();}
+
+// ── STACKS ────────────────────────────────────────────────────────────────────
+async function loadStacks(){
+  if(!connected)return;
+  const r=await fetch(srv+'/stacks');const stacks=await r.json();
+  const list=document.getElementById('stacks-list');if(!list)return;
+  if(!stacks.length){list.innerHTML='<div style="color:var(--mu);font-size:13px">Keine Stacks.</div>';return;}
+  const sc={'running':'var(--gr)','stopped':'var(--ye)','partial':'var(--ye)'};
+  const sl={'running':'läuft','stopped':'gestoppt','partial':'teilweise'};
+  list.innerHTML=stacks.map(s=>`
+    <div class="stack-row">
+      <div style="width:8px;height:8px;border-radius:50%;background:${sc[s.status]||'var(--bd2)'};flex-shrink:0"></div>
+      <div style="flex:1"><div style="font-weight:500;font-size:13px">${s.name}</div><div style="font-size:11px;color:var(--mu)">${s.running}/${s.total} Container</div></div>
+      <span class="badge b-pend" style="color:${sc[s.status]}">${sl[s.status]||s.status}</span>
+      ${s.status==='stopped'?`<button class="ok sm" onclick="ctrlStack('${s.name}','start')">▶ Starten</button>`:`<button class="sm" onclick="ctrlStack('${s.name}','stop')">■ Stoppen</button>`}
+    </div>`).join('');
+}
+async function ctrlStack(name,action){await fetch(srv+'/stacks/'+name+'/'+action,{method:'POST'});setTimeout(loadStacks,3000);}
+
+function addMsg(txt,type){
+  const m=document.getElementById('msgs');if(!m)return;
+  const d=document.createElement('div');d.className='msg '+type;d.textContent=txt;
+  m.appendChild(d);m.scrollTop=m.scrollHeight;
+}
+
+// Init
+setPrio(2);
+</script>
+</body>
+</html>
