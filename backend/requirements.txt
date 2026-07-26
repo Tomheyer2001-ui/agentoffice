@@ -5,3 +5,4 @@ sqlite-utils
 websockets
 docker
 psutil
+python-multipart
