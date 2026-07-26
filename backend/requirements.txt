@@ -1,7 +1,7 @@
 fastapi
 uvicorn
 requests
-sqlite-utils
+sqlite-utils>=3.30
 websockets
 docker
 psutil
