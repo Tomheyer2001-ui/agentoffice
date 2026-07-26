@@ -258,7 +258,7 @@ def llm(prompt, system="Du bist ein hilfreicher KI-Assistent.", model=None):
     try:
         r = requests.post(f"{OLLAMA_URL}/api/generate",json={
             "model":m,"prompt":prompt,
-            "system":system+NO_QUESTIONS,"stream":False},timeout=300)
+            "system":system+NO_QUESTIONS,"stream":False},timeout=1800)
         return r.json().get("response","")
     except Exception as e: return f"Fehler: {e}"
 
@@ -268,14 +268,14 @@ def llm_vision(prompt, image_path):
         with open(image_path,"rb") as f: img=base64.b64encode(f.read()).decode()
         r = requests.post(f"{OLLAMA_URL}/api/generate",json={
             "model":MODEL_VISION,"prompt":prompt+NO_QUESTIONS,
-            "images":[img],"stream":False},timeout=120)
+            "images":[img],"stream":False},timeout=1800)
         return r.json().get("response","")
     except Exception as e: return f"Vision-Fehler: {e}"
 
 def get_embedding(text: str) -> list:
     try:
         r = requests.post(f"{OLLAMA_URL}/api/embeddings",
-            json={"model":MODEL_EMBED,"prompt":text[:2000]},timeout=30)
+            json={"model":MODEL_EMBED,"prompt":text[:2000]},timeout=60)
         return r.json().get("embedding",[])
     except: return []
 
@@ -1230,7 +1230,7 @@ def run_file_task(task_id, title, filename, ftype):
                 if start_tool("whisper-asr"):
                     r=requests.post("http://localhost:9000/asr",
                         files={"audio_file":open(wp,"rb")},
-                        params={"task":"transcribe","language":"de"},timeout=120)
+                        params={"task":"transcribe","language":"de"},timeout=1800)
                     if r.ok:
                         text=r.json().get("text",""); on=wp.stem+"_transkript.txt"
                         (OUTBOX/on).write_text(text); result=f"Transkription: {on}\n{text[:200]}..."
