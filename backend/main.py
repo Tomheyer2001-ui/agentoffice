@@ -123,6 +123,14 @@ def get_db():
     if "agent_status" not in tables:
         db["agent_status"].create({"name":str,"status":str,
             "current_task":str,"skills":str,"updated_at":str},pk="name")
+    else:
+        # Migration: fehlende Spalten hinzufügen
+        existing_cols = [c.name for c in db["agent_status"].columns]
+        if "skills" not in existing_cols:
+            db["agent_status"].add_column("skills", str, not_null=False)
+        if "current_task" not in existing_cols:
+            db["agent_status"].add_column("current_task", str, not_null=False)
+
     if "agent_roster" not in tables:
         db["agent_roster"].create({"name":str,"role":str,"specialization":str,
             "status":str,"system_prompt":str,"hired_for_task":int,
@@ -211,27 +219,37 @@ def get_db():
     return db
 
 def set_agent(name, status, task=""):
-    get_db()["agent_status"].upsert({"name":name,"status":status,
-        "current_task":task,"skills":"",
-        "updated_at":datetime.now().isoformat()},pk="name")
+    """Setzt Agent-Status – fängt alle DB-Fehler ab damit Threads nicht abstürzen."""
+    try:
+        db = get_db()
+        db["agent_status"].upsert({
+            "name": name, "status": status,
+            "current_task": task, "skills": "",
+            "updated_at": datetime.now().isoformat()}, pk="name")
+    except Exception as e:
+        print(f"set_agent error ({name}/{status}): {e}")
 
 def get_agent_prompt(name):
-    db = get_db()
-    try: return db["agent_roster"].get(name)["system_prompt"] or ""
+    try: return get_db()["agent_roster"].get(name)["system_prompt"] or ""
     except: return ""
 
 def save_checkpoint(task_id, step, data):
-    get_db()["task_checkpoints"].insert({"task_id":task_id,"step":step,
-        "data":json.dumps(data) if not isinstance(data,str) else data,
-        "created_at":datetime.now().isoformat()})
+    try:
+        get_db()["task_checkpoints"].insert({"task_id":task_id,"step":step,
+            "data":json.dumps(data) if not isinstance(data,str) else data,
+            "created_at":datetime.now().isoformat()})
+    except Exception as e:
+        print(f"save_checkpoint error: {e}")
 
 def load_checkpoint(task_id, step):
-    db = get_db()
-    rows = list(db["task_checkpoints"].rows_where(
-        "task_id=? AND step=?",[task_id,step],order_by="created_at desc"))
-    if rows:
-        try: return json.loads(rows[0]["data"])
-        except: return rows[0]["data"]
+    try:
+        db = get_db()
+        rows = list(db["task_checkpoints"].rows_where(
+            "task_id=? AND step=?",[task_id,step],order_by="created_at desc"))
+        if rows:
+            try: return json.loads(rows[0]["data"])
+            except: return rows[0]["data"]
+    except: pass
     return None
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
@@ -255,7 +273,6 @@ def llm_vision(prompt, image_path):
     except Exception as e: return f"Vision-Fehler: {e}"
 
 def get_embedding(text: str) -> list:
-    """Holt Embedding-Vektor von Ollama (nomic-embed-text)."""
     try:
         r = requests.post(f"{OLLAMA_URL}/api/embeddings",
             json={"model":MODEL_EMBED,"prompt":text[:2000]},timeout=30)
@@ -270,6 +287,17 @@ def cosine_similarity(a, b) -> float:
     if na==0 or nb==0: return 0.0
     return dot/(na*nb)
 
+def select_model(task_title, file_type_hint=None):
+    title_lower = task_title.lower()
+    vision_kw = ["bild","foto","image","screenshot","photo","visuell","grafik"]
+    if file_type_hint=="image" or any(w in title_lower for w in vision_kw):
+        try:
+            r = requests.get(f"{OLLAMA_URL}/api/tags",timeout=3)
+            models = [m["name"] for m in r.json().get("models",[])]
+            if any("llava" in m for m in models): return MODEL_VISION
+        except: pass
+    return MODEL_CODE
+
 # ── TOOL CALLING ──────────────────────────────────────────────────────────────
 def execute_tool(name, args) -> str:
     try:
@@ -277,8 +305,7 @@ def execute_tool(name, args) -> str:
             return search_web(args.get("query","")) or "Keine Ergebnisse."
         elif name=="run_python":
             res = execute_code(args.get("code",""))
-            if res["success"]: return f"Output:\n{res['stdout'][:800]}"
-            return f"Fehler: {res['stderr'][:400]}"
+            return f"Output:\n{res['stdout'][:800]}" if res["success"] else f"Fehler: {res['stderr'][:400]}"
         elif name=="read_file":
             p = WORKSPACE/args.get("filename","")
             if p.exists(): return p.read_text(errors="ignore")[:2000]
@@ -289,10 +316,8 @@ def execute_tool(name, args) -> str:
             return f"Geschrieben: {p.name}"
         elif name=="call_api":
             m = args.get("method","GET").upper()
-            if m=="GET":
-                res=requests.get(args["url"],timeout=10)
-            else:
-                res=requests.post(args["url"],json=args.get("data",{}),timeout=10)
+            res = requests.get(args["url"],timeout=10) if m=="GET" \
+                else requests.post(args["url"],json=args.get("data",{}),timeout=10)
             return res.text[:1000]
         elif name=="ffmpeg_run":
             cmd=args.get("command","")
@@ -304,128 +329,111 @@ def execute_tool(name, args) -> str:
     return "Unbekanntes Tool."
 
 def llm_with_tools(task, system, model=None, agent_name="Coder") -> tuple:
-    """Agentic loop mit Tool-Calling. Gibt (antwort, tool_log) zurück."""
     m = model or MODEL_CODE
     tools_desc = "\n".join([
         f"- {t['name']}: {t['description']} | Parameter: {t['parameters']}"
         for t in AGENT_TOOLS])
     tool_log = []
     context_parts = []
-
     base = (
-        f"Aufgabe: {task}\n\n"
-        f"Verfügbare Tools:\n{tools_desc}\n\n"
+        f"Aufgabe: {task}\n\nVerfügbare Tools:\n{tools_desc}\n\n"
         "Wenn du ein Tool brauchst, antworte NUR mit JSON:\n"
         '{"tool":"name","args":{"key":"value"}}\n'
         "Wenn du fertig bist, antworte normal (kein JSON-Tool-Aufruf).")
-
     for step in range(MAX_TOOL_STEPS):
         prompt = base
         if context_parts:
             prompt += "\n\nBisherige Tool-Ergebnisse:\n" + "\n".join(context_parts)
-
         response = llm(prompt, system, m)
-
         m_json = re.search(r'\{\s*"tool"\s*:', response)
         if m_json:
             try:
                 call = json.loads(response.strip().strip("```json").strip("```").strip())
                 if "tool" in call:
-                    tname = call["tool"]
-                    targs = call.get("args",{})
-                    result = execute_tool(tname, targs)
-                    log_entry = f"[{tname}({targs})] → {result[:300]}"
+                    result = execute_tool(call["tool"], call.get("args",{}))
+                    log_entry = f"[{call['tool']}] → {result[:300]}"
                     tool_log.append(log_entry)
                     context_parts.append(log_entry)
                     continue
             except: pass
-
         return response, tool_log
-
-    final = llm(f"Aufgabe: {task}\n\nBisherige Erkenntnisse:\n"+"\n".join(context_parts)+
-                "\n\nFasse die Lösung jetzt zusammen:", system, m)
+    final = llm(f"Aufgabe: {task}\n\nErkenntnisse:\n"+"\n".join(context_parts)+
+                "\n\nFasse die Lösung zusammen:", system, m)
     return final, tool_log
 
-# ── CONFIDENCE SCORING ────────────────────────────────────────────────────────
+# ── CONFIDENCE ────────────────────────────────────────────────────────────────
 def assess_confidence(task, result, model=None) -> int:
-    raw = llm(
-        f"Aufgabe: {task}\nLösung: {result[:500]}\n\n"
-        "Wie sicher bist du dass diese Lösung korrekt und vollständig ist? "
-        "Bewerte 1-10. NUR eine Zahl.",
-        "Selbsteinschätzung. Nur eine Zahl.", model or MODEL_CODE)
     try:
+        raw = llm(
+            f"Aufgabe: {task}\nLösung: {result[:500]}\n\n"
+            "Wie sicher bist du dass diese Lösung korrekt ist? Bewerte 1-10. NUR eine Zahl.",
+            "Selbsteinschätzung. Nur eine Zahl.", model or MODEL_CODE)
         return max(1,min(10,int(re.search(r'\d+',raw).group())))
     except: return 7
 
-# ── RAG: SEMANTIC SKILL SEARCH ────────────────────────────────────────────────
+# ── RAG ───────────────────────────────────────────────────────────────────────
 def update_skill_embedding(skill_id, text):
-    emb = get_embedding(text)
-    if emb:
-        get_db()["skills"].update(skill_id,{"embedding":json.dumps(emb)})
+    try:
+        emb = get_embedding(text)
+        if emb:
+            get_db()["skills"].update(skill_id,{"embedding":json.dumps(emb)})
+    except: pass
 
 def get_relevant_skills(title: str) -> str:
-    db = get_db()
-    skills = list(db["skills"].rows)
-    if not skills: return ""
-    query_emb = get_embedding(title)
-    if query_emb:
-        scored = []
-        for s in skills:
+    try:
+        db = get_db()
+        skills = list(db["skills"].rows)
+        if not skills: return ""
+        query_emb = get_embedding(title)
+        if query_emb:
+            scored = []
+            for s in skills:
+                try:
+                    semb = json.loads(s.get("embedding") or "[]")
+                    score = cosine_similarity(query_emb, semb)
+                    scored.append((score, s))
+                except:
+                    scored.append((0.0, s))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            relevant = [s for sc,s in scored if sc > 0.3][:4]
+        else:
+            overview = "\n".join([f"[{s['id']}] {s['name']}: {s['description']}" for s in skills])
+            raw = llm(f"Aufgabe: {title}\nSkills:\n{overview}\nRelevante IDs? NUR JSON oder [].",
+                      "Nur JSON.")
             try:
-                semb = json.loads(s["embedding"] or "[]")
-                score = cosine_similarity(query_emb, semb)
-                scored.append((score, s))
-            except:
-                scored.append((0.0, s))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        relevant = [s for sc,s in scored if sc > 0.3][:4]
-    else:
-        overview = "\n".join([f"[{s['id']}] {s['name']}: {s['description']}" for s in skills])
-        raw = llm(f"Aufgabe: {title}\nSkills:\n{overview}\nRelevante IDs? NUR JSON oder [].",
-                  "Nur JSON.")
-        try:
-            ids = json.loads(raw.strip().strip("```json").strip("```").strip())
-            relevant = [s for s in skills if s["id"] in ids][:4]
-        except: relevant = []
-    if not relevant: return ""
-    return "\n\n--- Relevante Skills ---\n" + "\n\n".join([
-        f"=== {s['name']} (v{s['version']}, {s['success_count']}x OK) ===\n"
-        f"Wie: {s['how_to']}\nTools: {s['tools_needed']}\nFallstricke: {s['pitfalls']}"
-        for s in relevant])
+                ids = json.loads(raw.strip().strip("```json").strip("```").strip())
+                relevant = [s for s in skills if s["id"] in ids][:4]
+            except: relevant = []
+        if not relevant: return ""
+        return "\n\n--- Relevante Skills ---\n" + "\n\n".join([
+            f"=== {s['name']} (v{s['version']}, {s['success_count']}x OK) ===\n"
+            f"Wie: {s['how_to']}\nTools: {s['tools_needed']}\nFallstricke: {s['pitfalls']}"
+            for s in relevant])
+    except Exception as e:
+        print(f"get_relevant_skills error: {e}")
+        return ""
 
-# ── MODEL PERFORMANCE TRACKING ────────────────────────────────────────────────
+# ── MODEL PERFORMANCE ─────────────────────────────────────────────────────────
 def record_model_performance(model, task_type, quality, success, duration_s):
-    get_db()["model_performance"].insert({"model":model,"task_type":task_type,
-        "quality":quality,"success":int(success),"duration_s":duration_s,
-        "recorded_at":datetime.now().isoformat()})
+    try:
+        get_db()["model_performance"].insert({"model":model,"task_type":task_type,
+            "quality":quality,"success":int(success),"duration_s":duration_s,
+            "recorded_at":datetime.now().isoformat()})
+    except: pass
 
 def best_model_for_type(task_type: str) -> str:
-    db = get_db()
-    rows = list(db["model_performance"].rows_where(
-        "task_type=?", [task_type], order_by="recorded_at desc"))[:20]
-    if not rows: return MODEL_CODE
-    by_model = {}
-    for r in rows:
-        m = r["model"]
-        if m not in by_model: by_model[m] = []
-        by_model[m].append(r["quality"])
-    best = max(by_model, key=lambda m: sum(by_model[m])/len(by_model[m]))
-    return best
-
-def select_model(task_title, file_type_hint=None):
-    title_lower = task_title.lower()
-    vision_kw = ["bild","foto","image","screenshot","photo","visuell","grafik"]
-    if file_type_hint=="image" or any(w in title_lower for w in vision_kw):
-        try:
-            r = requests.get(f"{OLLAMA_URL}/api/tags",timeout=3)
-            models = [m["name"] for m in r.json().get("models",[])]
-            if any("llava" in m for m in models): return MODEL_VISION
-        except: pass
-    # Frage Performance-Tracking
-    task_type = "video" if "video" in title_lower else \
-                "audio" if "audio" in title_lower else \
-                "code"
-    return best_model_for_type(task_type)
+    try:
+        db = get_db()
+        rows = list(db["model_performance"].rows_where(
+            "task_type=?",[task_type],order_by="recorded_at desc"))[:20]
+        if not rows: return MODEL_CODE
+        by_model = {}
+        for r in rows:
+            m = r["model"]
+            if m not in by_model: by_model[m] = []
+            by_model[m].append(r["quality"])
+        return max(by_model, key=lambda m: sum(by_model[m])/len(by_model[m]))
+    except: return MODEL_CODE
 
 # ── RESOURCE MONITOR ─────────────────────────────────────────────────────────
 def resource_monitor():
@@ -443,9 +451,7 @@ def resource_monitor():
                 avail = int(lines["MemAvailable"].split()[0])
                 ram = round((total-avail)/total*100, 1)
                 cpu = 0.0
-            RESOURCE_STATUS = {
-                "ram_pct": ram, "cpu_pct": cpu,
-                "warning": ram > RESOURCE_WARN_RAM}
+            RESOURCE_STATUS = {"ram_pct":ram,"cpu_pct":cpu,"warning":ram>RESOURCE_WARN_RAM}
         except: pass
         time.sleep(10)
 
@@ -464,47 +470,57 @@ def search_web(query: str) -> str:
     except: return ""
 
 def research_task(title: str) -> str:
-    set_agent("Planner","working",f"Recherchiert: {title}")
-    results = search_web(title)
-    if not results: set_agent("Planner","sleeping"); return ""
-    summary = llm(
-        f"Aufgabe: {title}\n\nRecherche:\n{results}\n\n"
-        "Bester Ansatz? Kostenlose Tools? CPU-only.",
-        get_agent_prompt("Planner") or "Technischer Researcher. Nur freie Tools.")
-    set_agent("Planner","sleeping")
-    return summary
+    try:
+        set_agent("Planner","working",f"Recherchiert: {title}")
+        results = search_web(title)
+        if not results:
+            set_agent("Planner","sleeping")
+            return ""
+        summary = llm(
+            f"Aufgabe: {title}\n\nRecherche:\n{results}\n\n"
+            "Bester Ansatz? Kostenlose Tools? CPU-only.",
+            get_agent_prompt("Planner") or "Technischer Researcher. Nur freie Tools.")
+        set_agent("Planner","sleeping")
+        return summary
+    except Exception as e:
+        print(f"research_task error: {e}")
+        set_agent("Planner","sleeping")
+        return ""
 
 def deep_research(title: str) -> str:
-    set_agent("Planner","working",f"Deep Research: {title}")
-    cp = load_checkpoint(-1, f"deep_research_{title[:40]}")
-    if cp: set_agent("Planner","sleeping"); return cp
-
-    r1 = search_web(title)
-    if not r1: set_agent("Planner","sleeping"); return ""
-
-    fq_raw = llm(
-        f"Aufgabe: {title}\nErste Recherche:\n{r1}\n\n"
-        "Welche 2-3 spezifischen Suchanfragen schließen Wissenslücken? "
-        "Eine pro Zeile.", "Nur Suchanfragen, eine pro Zeile.")
-    queries = [q.strip() for q in fq_raw.strip().split('\n')
-               if q.strip() and len(q.strip())>5][:3]
-
-    all_results = [f"[Hauptsuche]\n{r1}"]
-    for q in queries:
-        r = search_web(q)
-        if r: all_results.append(f"[Folge: {q}]\n{r}")
-
-    synthesis = llm(
-        f"Aufgabe: {title}\n\n{len(all_results)} Quellen:\n\n" +
-        "\n\n---\n\n".join(all_results) +
-        "\n\nSynthese: Bester Ansatz, kostenlose Tools, Fallstricke, konkrete Schritte?",
-        get_agent_prompt("Planner") or "Researcher. Synthese aus mehreren Quellen.")
-
-    save_checkpoint(-1, f"deep_research_{title[:40]}", synthesis)
-    set_agent("Planner","sleeping")
-    journal_write(f"Deep Research: {title[:80]}\nQuellen: {len(all_results)}",
-        type_="research",author="Planner",tags="deep-research")
-    return synthesis
+    try:
+        set_agent("Planner","working",f"Deep Research: {title}")
+        cp = load_checkpoint(-1, f"deep_{title[:40]}")
+        if cp:
+            set_agent("Planner","sleeping")
+            return cp
+        r1 = search_web(title)
+        if not r1:
+            set_agent("Planner","sleeping")
+            return ""
+        fq_raw = llm(
+            f"Aufgabe: {title}\nErste Recherche:\n{r1}\n\n"
+            "2-3 spezifische Folge-Suchanfragen? Eine pro Zeile.",
+            "Nur Suchanfragen.")
+        queries = [q.strip() for q in fq_raw.strip().split('\n')
+                   if q.strip() and len(q.strip())>5][:3]
+        all_results = [f"[Hauptsuche]\n{r1}"]
+        for q in queries:
+            r = search_web(q)
+            if r: all_results.append(f"[Folge: {q}]\n{r}")
+        synthesis = llm(
+            f"Aufgabe: {title}\n\n{len(all_results)} Quellen:\n\n" +
+            "\n\n---\n\n".join(all_results) +
+            "\n\nSynthese: Bester Ansatz, kostenlose Tools, Fallstricke?",
+            "Researcher. Synthese aus mehreren Quellen.")
+        save_checkpoint(-1, f"deep_{title[:40]}", synthesis)
+        set_agent("Planner","sleeping")
+        journal_write(f"Deep Research: {title[:80]}",type_="research",author="Planner")
+        return synthesis
+    except Exception as e:
+        print(f"deep_research error: {e}")
+        set_agent("Planner","sleeping")
+        return ""
 
 # ── THINKING ──────────────────────────────────────────────────────────────────
 def get_thinking_mode() -> str:
@@ -512,72 +528,78 @@ def get_thinking_mode() -> str:
     except: return "auto"
 
 def set_thinking_mode(mode: str):
-    get_db()["settings"].upsert({"key":"thinking_mode","value":mode},pk="key")
+    try: get_db()["settings"].upsert({"key":"thinking_mode","value":mode},pk="key")
+    except: pass
 
 def should_think_deeply(title: str) -> bool:
-    raw = llm(
-        f"Aufgabe: '{title}'\nBraucht diese Aufgabe tiefes Nachdenken? "
-        "JA wenn: komplex, mehrere Teilprobleme, hohe Fehlerwahrscheinlichkeit. "
-        "NUR JA oder NEIN.", "Nur JA oder NEIN.")
-    return "JA" in raw.strip().upper()
+    try:
+        raw = llm(
+            f"Aufgabe: '{title}'\nBraucht diese Aufgabe tiefes Nachdenken? "
+            "JA wenn komplex. NUR JA oder NEIN.","Nur JA oder NEIN.")
+        return "JA" in raw.strip().upper()
+    except: return False
 
 def llm_think(prompt, system, model=None) -> tuple:
     m = model or MODEL_CODE
-    thinking = llm(
-        f"Aufgabe: {prompt}\n\n"
-        "Denke systematisch nach:\n"
-        "〔1〕 Was genau wird verlangt?\n"
-        "〔2〕 Welche Teilprobleme gibt es?\n"
-        "〔3〕 Welcher Ansatz ist am besten?\n"
-        "〔4〕 Was könnte schiefgehen?\n"
-        "〔5〕 Konkreter Plan:\n",
-        system+" Du denkst laut nach bevor du antwortest.", m)
-    answer, tlog = llm_with_tools(
-        f"Aufgabe: {prompt}\n\nMeine Analyse:\n{thinking}\n\n"
-        "Führe jetzt basierend auf dieser Analyse aus:", system, m)
-    return answer, thinking, tlog
+    try:
+        thinking = llm(
+            f"Aufgabe: {prompt}\n\n"
+            "Denke systematisch nach:\n"
+            "〔1〕 Was wird verlangt?\n〔2〕 Teilprobleme?\n"
+            "〔3〕 Bester Ansatz?\n〔4〕 Fehlerrisiken?\n〔5〕 Plan:\n",
+            system+" Du denkst laut nach.", m)
+        answer, tlog = llm_with_tools(
+            f"Aufgabe: {prompt}\n\nMeine Analyse:\n{thinking}\n\nFühre jetzt aus:",
+            system, m)
+        return answer, thinking, tlog
+    except Exception as e:
+        print(f"llm_think error: {e}")
+        answer, tlog = llm_with_tools(prompt, system, m)
+        return answer, "", tlog
 
 # ── SKILL SYSTEM ──────────────────────────────────────────────────────────────
 def create_or_update_skill(title, result, research, tools_used,
                             feedback="", success=True, quality=7):
-    db = get_db()
-    cat  = llm(f"Aufgabe: {title}\nKategorie (1 Wort):","Nur ein Wort.").strip().split()[0][:20]
-    name = llm(f"Aufgabe: {title}\nKurzer Skill-Name (2-4 Wörter):","Nur der Name.").strip()[:60]
-    existing = list(db["skills"].rows_where("name=?",[name]))
-    how_to   = llm(f"Aufgabe: {title}\nLösung: {result[:400]}\n"
-                   "Knappe Anleitung (5-8 Schritte):","Dokumentationsschreiber.")
-    pitfalls = llm(f"Aufgabe: {title}\nFeedback: {feedback}\n2-3 häufige Fehler?","Kurz.")
-    tools_str = ", ".join(tools_used) if tools_used else "keine"
-    skill_text = f"{name} {how_to} {pitfalls}"
-    if existing:
-        s = existing[0]
-        merged = llm(f"Alt:\n{s['how_to']}\n\nNeu:\n{how_to}\n\nBeste Anleitung:",
-                     "Verbessere Dokumentation.")
-        db["skills"].update(s["id"],{
-            "how_to":merged,"pitfalls":(s["pitfalls"] or "")+"\n"+pitfalls,
-            "examples":(s["examples"] or "")+f"\n---\nv{s['version']+1}: {title[:80]}",
-            "success_count":s["success_count"]+(1 if success else 0),
-            "failure_count":s["failure_count"]+(0 if success else 1),
-            "version":s["version"]+1,"last_used":datetime.now().isoformat()})
-        update_skill_embedding(s["id"], skill_text)
-    else:
-        new_id = db["skills"].insert({"name":name,"category":cat,
-            "description":f"Gelernt bei: {title[:80]}","how_to":how_to,
-            "tools_needed":tools_str,"pitfalls":pitfalls,
-            "examples":f"Erstes Beispiel: {title[:80]}","embedding":"",
-            "success_count":1 if success else 0,"failure_count":0 if success else 1,
-            "version":1,"last_used":datetime.now().isoformat(),
-            "created_at":datetime.now().isoformat()}).last_pk
-        update_skill_embedding(new_id, skill_text)
+    try:
+        db = get_db()
+        cat  = llm(f"Aufgabe: {title}\nKategorie (1 Wort):","Nur ein Wort.").strip().split()[0][:20]
+        name = llm(f"Aufgabe: {title}\nKurzer Skill-Name (2-4 Wörter):","Nur der Name.").strip()[:60]
+        existing = list(db["skills"].rows_where("name=?",[name]))
+        how_to   = llm(f"Aufgabe: {title}\nLösung: {result[:400]}\nKnappe Anleitung (5-8 Schritte):",
+                       "Dokumentationsschreiber.")
+        pitfalls = llm(f"Aufgabe: {title}\n2-3 häufige Fehler?","Kurz.")
+        tools_str = ", ".join(tools_used) if tools_used else "keine"
+        if existing:
+            s = existing[0]
+            merged = llm(f"Alt:\n{s['how_to']}\n\nNeu:\n{how_to}\n\nBeste Anleitung:",
+                         "Verbessere Dokumentation.")
+            db["skills"].update(s["id"],{
+                "how_to":merged,"pitfalls":(s["pitfalls"] or "")+"\n"+pitfalls,
+                "examples":(s["examples"] or "")+f"\n---\nv{s['version']+1}: {title[:80]}",
+                "success_count":s["success_count"]+(1 if success else 0),
+                "failure_count":s["failure_count"]+(0 if success else 1),
+                "version":s["version"]+1,"last_used":datetime.now().isoformat()})
+            update_skill_embedding(s["id"], merged)
+        else:
+            new_id = db["skills"].insert({"name":name,"category":cat,
+                "description":f"Gelernt bei: {title[:80]}","how_to":how_to,
+                "tools_needed":tools_str,"pitfalls":pitfalls,
+                "examples":f"Erstes Beispiel: {title[:80]}","embedding":"",
+                "success_count":1 if success else 0,"failure_count":0 if success else 1,
+                "version":1,"last_used":datetime.now().isoformat(),
+                "created_at":datetime.now().isoformat()}).last_pk
+            update_skill_embedding(new_id, how_to)
+    except Exception as e:
+        print(f"create_or_update_skill error: {e}")
 
 def apply_feedback_to_skill(task_title, feedback):
-    db = get_db()
-    skills = list(db["skills"].rows)
-    if not skills: return
-    overview = "\n".join([f"[{s['id']}] {s['name']}" for s in skills])
-    raw = llm(f"Aufgabe: {task_title}\nFeedback: {feedback}\n"
-              f"Skills:\n{overview}\nRelevante ID? Nur Zahl oder 0.","Nur Zahl.")
     try:
+        db = get_db()
+        skills = list(db["skills"].rows)
+        if not skills: return
+        overview = "\n".join([f"[{s['id']}] {s['name']}" for s in skills])
+        raw = llm(f"Aufgabe: {task_title}\nFeedback: {feedback}\n"
+                  f"Skills:\n{overview}\nRelevante ID? Nur Zahl oder 0.","Nur Zahl.")
         sid = int(raw.strip())
         if sid==0: return
         s = db["skills"].get(sid)
@@ -586,18 +608,18 @@ def apply_feedback_to_skill(task_title, feedback):
         db["skills"].update(sid,{"how_to":corrected,
             "failure_count":s["failure_count"]+1,"version":s["version"]+1,
             "last_used":datetime.now().isoformat()})
-        update_skill_embedding(sid, corrected)
-    except: pass
+    except Exception as e:
+        print(f"apply_feedback_to_skill error: {e}")
 
 # ── TOOL GAP ANALYSIS ─────────────────────────────────────────────────────────
 def analyze_tool_gaps(title, research):
-    db = get_db()
-    available = [f"{t['name']}: {t['description']} ({t['status']})" for t in db["tools"].rows]
-    raw = llm(
-        f"Aufgabe: {title}\nResearch: {research}\nTools:\n{chr(10).join(available)}\n\n"
-        "Fehlende kostenlose open-source Tools? JSON:\n"
-        '[{"name":"x","reason":"y","install_hint":"z"}] oder []',"Nur JSON.")
     try:
+        db = get_db()
+        available = [f"{t['name']}: {t['description']} ({t['status']})" for t in db["tools"].rows]
+        raw = llm(
+            f"Aufgabe: {title}\nResearch: {research}\nTools:\n{chr(10).join(available)}\n\n"
+            "Fehlende kostenlose open-source Tools? JSON:\n"
+            '[{"name":"x","reason":"y","install_hint":"z"}] oder []',"Nur JSON.")
         gaps = json.loads(raw.strip().strip("```json").strip("```").strip())
         for g in gaps:
             if not list(db["tool_requests"].rows_where("tool_name=? AND status='pending'",[g["name"]])):
@@ -609,34 +631,39 @@ def analyze_tool_gaps(title, research):
     except: return []
 
 def get_available_tools_for_task(title):
-    db = get_db()
-    available = [t["name"] for t in db["tools"].rows_where("status != 'not_installed'")]
-    if not available: return []
-    raw = llm(f"Aufgabe: {title}\nTools: {', '.join(available)}\nWelche? NUR JSON oder [].",
-              "Nur JSON.")
-    try: return json.loads(raw.strip().strip("```json").strip("```").strip())
+    try:
+        db = get_db()
+        available = [t["name"] for t in db["tools"].rows_where("status != 'not_installed'")]
+        if not available: return []
+        raw = llm(f"Aufgabe: {title}\nTools: {', '.join(available)}\nWelche? NUR JSON oder [].",
+                  "Nur JSON.")
+        return json.loads(raw.strip().strip("```json").strip("```").strip())
     except: return []
 
 # ── JOURNAL ───────────────────────────────────────────────────────────────────
 def journal_write(content, type_="auto", author="Agent", tags=""):
-    get_db()["journal"].insert({"content":content,"type":type_,
-        "author":author,"tags":tags,"created_at":datetime.now().isoformat()})
+    try:
+        get_db()["journal"].insert({"content":content,"type":type_,
+            "author":author,"tags":tags,"created_at":datetime.now().isoformat()})
+    except: pass
 
 def get_journal_context():
-    entries = list(get_db()["journal"].rows_where(
-        order_by="created_at desc"))[:8]
-    if not entries: return ""
-    return "\n\n--- Journal ---\n" + "\n".join([
-        f"[{e['created_at'][:10]} {e['type']}] {e['content'][:150]}"
-        for e in reversed(entries)])
-
-# ── N8N WORKFLOW BUILDER ──────────────────────────────────────────────────────
-def build_n8n_workflow(description):
-    wf_json = llm(
-        f"Erstelle n8n Workflow für: {description}\n"
-        "NUR valides n8n JSON mit: name, nodes, connections, active:false, settings:{}",
-        "n8n-Experte. Nur JSON.")
     try:
+        entries = list(get_db()["journal"].rows_where(
+            order_by="created_at desc"))[:8]
+        if not entries: return ""
+        return "\n\n--- Journal ---\n" + "\n".join([
+            f"[{e['created_at'][:10]} {e['type']}] {e['content'][:150]}"
+            for e in reversed(entries)])
+    except: return ""
+
+# ── N8N ───────────────────────────────────────────────────────────────────────
+def build_n8n_workflow(description):
+    try:
+        wf_json = llm(
+            f"Erstelle n8n Workflow für: {description}\n"
+            "NUR valides n8n JSON mit: name, nodes, connections, active:false, settings:{}",
+            "n8n-Experte. Nur JSON.")
         clean = wf_json.strip().strip("```json").strip("```").strip()
         wf = json.loads(clean)
         if N8N_API_KEY:
@@ -666,194 +693,203 @@ def execute_code(code):
         return {"stdout":"","stderr":str(e),"returncode":-1,"success":False}
 
 def extract_and_run_code(text):
-    for pattern in [r'```python\n(.*?)```',r'```\n(.*?)```']:
-        m = re.search(pattern,text,re.DOTALL)
-        if m: return execute_code(m.group(1).strip())
-    if text.strip().startswith(('import ','def ','print(','#!')):
-        return execute_code(text.strip())
+    try:
+        for pattern in [r'```python\n(.*?)```',r'```\n(.*?)```']:
+            m = re.search(pattern,text,re.DOTALL)
+            if m: return execute_code(m.group(1).strip())
+        if text.strip().startswith(('import ','def ','print(','#!')):
+            return execute_code(text.strip())
+    except: pass
     return None
 
 # ── AGENT COMMUNICATION ───────────────────────────────────────────────────────
 def agent_send(from_a, to_a, task_id, msg_type, content):
-    get_db()["agent_messages"].insert({"from_agent":from_a,"to_agent":to_a,
-        "task_id":task_id,"message_type":msg_type,"content":content,
-        "status":"unread","created_at":datetime.now().isoformat()})
+    try:
+        get_db()["agent_messages"].insert({"from_agent":from_a,"to_agent":to_a,
+            "task_id":task_id,"message_type":msg_type,"content":content,
+            "status":"unread","created_at":datetime.now().isoformat()})
+    except: pass
 
 def agent_recv(agent_name, task_id=None):
-    db = get_db()
-    where = "to_agent=? AND status='unread'"
-    params = [agent_name]
-    if task_id is not None:
-        where += " AND task_id=?"; params.append(task_id)
-    msgs = list(db["agent_messages"].rows_where(where,params,order_by="created_at"))
-    for m in msgs:
-        db["agent_messages"].update(m["id"],{"status":"read"})
-    return msgs
+    try:
+        db = get_db()
+        where = "to_agent=? AND status='unread'"
+        params = [agent_name]
+        if task_id is not None:
+            where += " AND task_id=?"; params.append(task_id)
+        msgs = list(db["agent_messages"].rows_where(where,params,order_by="created_at"))
+        for m in msgs:
+            db["agent_messages"].update(m["id"],{"status":"read"})
+        return msgs
+    except: return []
 
 def agent_msg_context(agent_name, task_id):
-    msgs = agent_recv(agent_name, task_id)
-    if not msgs: return ""
-    return "\n\n--- Nachrichten ---\n" + "\n".join([
-        f"[Von {m['from_agent']}·{m['message_type']}]: {m['content'][:200]}"
-        for m in msgs])
+    try:
+        msgs = agent_recv(agent_name, task_id)
+        if not msgs: return ""
+        return "\n\n--- Nachrichten ---\n" + "\n".join([
+            f"[Von {m['from_agent']}·{m['message_type']}]: {m['content'][:200]}"
+            for m in msgs])
+    except: return ""
 
 # ── AGENT EVOLUTION ───────────────────────────────────────────────────────────
 def evolve_agent_prompt(agent_name, recent_tasks, quality_avg):
-    db = get_db()
     try:
+        db = get_db()
         current = db["agent_roster"].get(agent_name)["system_prompt"] or ""
-    except: return
-    tasks_text = "\n".join([t["title"][:50] for t in recent_tasks[:5]])
-    new_prompt = llm(
-        f"Agent: {agent_name}\nAktueller System-Prompt:\n{current}\n\n"
-        f"Durchschnittliche Qualitätsnote: {quality_avg:.1f}/10\n"
-        f"Zuletzt erledigte Aufgaben:\n{tasks_text}\n\n"
-        "Verbessere den System-Prompt basierend auf den Erfahrungen. "
-        "Mach ihn spezifischer und effektiver. Nur den neuen Prompt:",
-        "Du verbesserst Agent-System-Prompts.")
-    if len(new_prompt) > 50:
-        db["agent_roster"].update(agent_name,{"system_prompt":new_prompt.strip()})
-        journal_write(f"Agent-Prompt verbessert: {agent_name}",
-            type_="evolution",author="Judge",tags="agent-evolution")
+        tasks_text = "\n".join([t["title"][:50] for t in recent_tasks[:5]])
+        new_prompt = llm(
+            f"Agent: {agent_name}\nAktueller Prompt:\n{current}\n\n"
+            f"Durchschnittliche Qualität: {quality_avg:.1f}/10\n"
+            f"Zuletzt:\n{tasks_text}\n\nVerbessere den Prompt:",
+            "Du verbesserst Agent-System-Prompts.")
+        if len(new_prompt) > 50:
+            db["agent_roster"].update(agent_name,{"system_prompt":new_prompt.strip()})
+            journal_write(f"Agent-Prompt verbessert: {agent_name}",
+                type_="evolution",author="Judge")
+    except Exception as e:
+        print(f"evolve_agent_prompt error: {e}")
 
 # ── HIRE / RETIRE ─────────────────────────────────────────────────────────────
 def hire_agent(role, specialization, task_id=None):
-    db = get_db()
-    existing = [a["name"] for a in db["agent_roster"].rows_where("role=?",[role])]
-    i = 2
-    while f"{role.capitalize()}-{i}" in existing: i+=1
-    name = f"{role.capitalize()}-{i}"
-    base_prompt = db["agent_roster"].get(role.capitalize())["system_prompt"] \
-        if role.capitalize() in existing else ""
-    db["agent_roster"].insert({"name":name,"role":role,"specialization":specialization,
-        "status":"active","system_prompt":base_prompt,
-        "hired_for_task":task_id,"tasks_completed":0,"avg_quality":0.0,
-        "hired_at":datetime.now().isoformat(),"retired_at":""})
-    set_agent(name,"sleeping")
-    journal_write(f"Eingestellt: {name} – {specialization}",
-        type_="hire",author="Chef",tags="hire")
-    return name
+    try:
+        db = get_db()
+        existing = [a["name"] for a in db["agent_roster"].rows_where("role=?",[role])]
+        i = 2
+        while f"{role.capitalize()}-{i}" in existing: i+=1
+        name = f"{role.capitalize()}-{i}"
+        try:
+            base_prompt = db["agent_roster"].get(role.capitalize())["system_prompt"]
+        except:
+            base_prompt = ""
+        db["agent_roster"].insert({"name":name,"role":role,"specialization":specialization,
+            "status":"active","system_prompt":base_prompt,
+            "hired_for_task":task_id,"tasks_completed":0,"avg_quality":0.0,
+            "hired_at":datetime.now().isoformat(),"retired_at":""})
+        set_agent(name,"sleeping")
+        journal_write(f"Eingestellt: {name} – {specialization}",type_="hire",author="Chef")
+        return name
+    except Exception as e:
+        print(f"hire_agent error: {e}")
+        return "Coder"
 
 def retire_agent(name):
-    db = get_db()
     try:
+        db = get_db()
         a = db["agent_roster"].get(name)
         if "-" in name and a["role"] in ("coder","researcher"):
             db["agent_roster"].update(name,{"status":"retired",
                 "retired_at":datetime.now().isoformat()})
             try: db["agent_status"].delete_where("name=?",[name])
             except: pass
-            journal_write(f"Entlassen: {name}",type_="retire",author="Chef",tags="retire")
-    except: pass
+            journal_write(f"Entlassen: {name}",type_="retire",author="Chef")
+    except Exception as e:
+        print(f"retire_agent error: {e}")
 
 # ── CHEF ORCHESTRATION ────────────────────────────────────────────────────────
 def chef_evaluate(title, research) -> dict:
-    set_agent("Chef","working",f"Bewertet: {title}")
-    result = llm(
-        f"Aufgabe: {title}\nResearch: {research[:400]}\n\n"
-        "Du bist Tech-Lead. Bewerte:\n"
-        "1. Komplexität 1-10\n2. Anzahl Coder (1-3)\n"
-        "3. Cross-Check nötig?\n4. Spezielle Expertise?\n5. Debate nötig (bei >=8)?\n"
-        "NUR JSON:\n"
-        '{"complexity":5,"coder_count":1,"cross_check":false,'
-        '"debate":false,"specialization":"","reason":""}',
-        get_agent_prompt("Chef") or "Tech-Lead. Nur JSON.")
-    set_agent("Chef","sleeping")
     try:
+        set_agent("Chef","working",f"Bewertet: {title}")
+        result = llm(
+            f"Aufgabe: {title}\nResearch: {research[:400]}\n\n"
+            "Bewerte:\n1. Komplexität 1-10\n2. Anzahl Coder (1-3)\n"
+            "3. Cross-Check nötig?\n4. Debate nötig (>=8)?\n"
+            "NUR JSON:\n"
+            '{"complexity":5,"coder_count":1,"cross_check":false,'
+            '"debate":false,"specialization":"","reason":""}',
+            get_agent_prompt("Chef") or "Tech-Lead. Nur JSON.")
+        set_agent("Chef","sleeping")
         plan = json.loads(result.strip().strip("```json").strip("```").strip())
         plan["coder_count"] = max(1,min(3,int(plan.get("coder_count",1))))
         plan["debate"] = plan.get("complexity",5) >= DEBATE_THRESHOLD
         return plan
-    except:
+    except Exception as e:
+        print(f"chef_evaluate error: {e}")
+        set_agent("Chef","sleeping")
         return {"complexity":5,"coder_count":1,"cross_check":False,
                 "debate":False,"specialization":"","reason":"Standard"}
 
 def chef_final_review(task_id, title, result) -> dict:
-    set_agent("Chef","working",f"Final-Review: {title}")
-    review = llm(
-        f"Aufgabe: {title}\nTeam-Lösung:\n{result[:800]}\n\n"
-        "Finale Qualitätskontrolle:\n- Vollständig gelöst?\n"
-        "- Fehler oder Halluzinationen?\n- Qualitätsnote 1-10?\n"
-        "NUR JSON:\n"
-        '{"approved":true,"quality":8,"feedback":"","issues":[]}',
-        get_agent_prompt("Chef") or "Tech-Lead. Finale QS. Nur JSON.")
-    set_agent("Chef","sleeping")
-    try: return json.loads(review.strip().strip("```json").strip("```").strip())
-    except: return {"approved":True,"quality":7,"feedback":"OK","issues":[]}
+    try:
+        set_agent("Chef","working",f"Final-Review: {title}")
+        review = llm(
+            f"Aufgabe: {title}\nLösung:\n{result[:800]}\n\n"
+            "Finale Qualitätskontrolle. NUR JSON:\n"
+            '{"approved":true,"quality":8,"feedback":"","issues":[]}',
+            get_agent_prompt("Chef") or "Tech-Lead. Nur JSON.")
+        set_agent("Chef","sleeping")
+        return json.loads(review.strip().strip("```json").strip("```").strip())
+    except Exception as e:
+        print(f"chef_final_review error: {e}")
+        set_agent("Chef","sleeping")
+        return {"approved":True,"quality":7,"feedback":"OK","issues":[]}
 
 def run_debate(task_id, title, research, skill_ctx, model):
-    """Zwei Agenten debattieren den Ansatz vor der Implementierung."""
-    set_agent("Coder","working",f"Debatte: {title}")
-    set_agent("Critic","working",f"Debatte: {title}")
-    agent_send("Chef","Coder",task_id,"debate_start",
-        f"Debattiere den Ansatz für: {title}")
-    agent_send("Chef","Critic",task_id,"debate_start",
-        f"Debattiere den Ansatz für: {title}")
-
-    pos_a = llm(
-        f"Aufgabe: {title}\nResearch: {research[:400]}\n{skill_ctx}\n\n"
-        "Schlage einen konkreten Lösungsansatz vor und begründe ihn (3-4 Sätze):",
-        get_agent_prompt("Coder") or "Coder. Schlage Ansatz vor.", model)
-
-    pos_b = llm(
-        f"Aufgabe: {title}\nResearch: {research[:400]}\n{skill_ctx}\n\n"
-        f"Anderer Coder schlägt vor:\n{pos_a}\n\n"
-        "Stimme zu oder schlage Alternative vor. Begründe kurz:",
-        get_agent_prompt("Critic") or "Critic. Bewerte Ansatz.", MODEL_CODE)
-
-    consensus = llm(
-        f"Aufgabe: {title}\n\n"
-        f"Coder-Ansatz:\n{pos_a}\n\nCritic-Einschätzung:\n{pos_b}\n\n"
-        "Entscheide: Welcher Ansatz ist besser? Fasse den finalen Plan in 2-3 Sätzen zusammen:",
-        get_agent_prompt("Chef") or "Chef. Entscheide Ansatz.")
-
-    agent_send("Coder","Judge",task_id,"debate_result",
-        f"Finaler Ansatz beschlossen: {consensus[:200]}")
-    set_agent("Coder","sleeping"); set_agent("Critic","sleeping")
-    journal_write(f"Debate für: {title[:60]}\nKonsens: {consensus[:200]}",
-        type_="debate",author="Chef",tags="debate")
-    return consensus
+    try:
+        set_agent("Coder","working",f"Debatte: {title}")
+        set_agent("Critic","working",f"Debatte: {title}")
+        pos_a = llm(
+            f"Aufgabe: {title}\nResearch: {research[:400]}\n\n"
+            "Schlage einen Lösungsansatz vor und begründe ihn (3-4 Sätze):",
+            get_agent_prompt("Coder") or "Coder.", model)
+        pos_b = llm(
+            f"Aufgabe: {title}\nAnsatz:\n{pos_a}\n\n"
+            "Stimme zu oder schlage Alternative vor:",
+            get_agent_prompt("Critic") or "Critic.", MODEL_CODE)
+        consensus = llm(
+            f"Aufgabe: {title}\n\nCoder:\n{pos_a}\n\nCritic:\n{pos_b}\n\n"
+            "Finaler Plan in 2-3 Sätzen:",
+            get_agent_prompt("Chef") or "Chef.")
+        set_agent("Coder","sleeping"); set_agent("Critic","sleeping")
+        journal_write(f"Debate: {title[:60]}\nKonsens: {consensus[:200]}",
+            type_="debate",author="Chef")
+        return consensus
+    except Exception as e:
+        print(f"run_debate error: {e}")
+        set_agent("Coder","sleeping"); set_agent("Critic","sleeping")
+        return ""
 
 def critic_cross_check(task_id, title, sol_a, sol_b, ag_a, ag_b) -> str:
-    set_agent("Critic","working",f"Cross-Check: {title}")
-    synthesis = llm(
-        f"Aufgabe: {title}\n\n"
-        f"=== {ag_a} ===\n{sol_a[:600]}\n\n"
-        f"=== {ag_b} ===\n{sol_b[:600]}\n\n"
-        "Vergleiche:\n1. Was macht A besser?\n2. Was macht B besser?\n"
-        "3. Wo stimmen beide überein? (wahrscheinlich korrekt)\n"
-        "4. Wo widersprechen sie? (Halluzinations-Risiko)\n\n"
-        "Erstelle die beste synthetisierte Lösung:",
-        get_agent_prompt("Critic") or "Erfahrener Reviewer. Synthese.")
-    set_agent("Critic","sleeping")
-    agent_send("Critic","Chef",task_id,"cross_check_done","Cross-Check abgeschlossen.")
-    return synthesis
+    try:
+        set_agent("Critic","working",f"Cross-Check: {title}")
+        synthesis = llm(
+            f"Aufgabe: {title}\n\n=== {ag_a} ===\n{sol_a[:600]}\n\n"
+            f"=== {ag_b} ===\n{sol_b[:600]}\n\n"
+            "Vergleiche und erstelle beste Synthese:",
+            get_agent_prompt("Critic") or "Reviewer.")
+        set_agent("Critic","sleeping")
+        return synthesis
+    except Exception as e:
+        print(f"critic_cross_check error: {e}")
+        set_agent("Critic","sleeping")
+        return sol_a
 
 # ── TASK DEPENDENCIES ─────────────────────────────────────────────────────────
 def dependencies_met(task_id) -> bool:
-    db = get_db()
     try:
+        db = get_db()
         task = db["tasks"].get(task_id)
         deps = json.loads(task.get("depends_on") or "[]")
         if not deps: return True
         for dep_id in deps:
-            dep = db["tasks"].get(dep_id)
-            if dep["status"] != "done": return False
+            if db["tasks"].get(dep_id)["status"] != "done": return False
         return True
     except: return True
 
 # ── SLEEP / QUEUE ─────────────────────────────────────────────────────────────
 def is_sleep_time():
-    db = get_db()
-    schedules = list(db["sleep_schedules"].rows_where("active=1"))
-    now = datetime.now(); wd = str(now.weekday()); nt = now.strftime("%H:%M")
-    for s in schedules:
-        if wd not in s["weekdays"].split(","): continue
-        st,en = s["start_time"],s["end_time"]
-        if st<=en:
-            if st<=nt<=en: return True
-        else:
-            if nt>=st or nt<=en: return True
+    try:
+        db = get_db()
+        schedules = list(db["sleep_schedules"].rows_where("active=1"))
+        now = datetime.now(); wd=str(now.weekday()); nt=now.strftime("%H:%M")
+        for s in schedules:
+            if wd not in s["weekdays"].split(","): continue
+            st,en = s["start_time"],s["end_time"]
+            if st<=en:
+                if st<=nt<=en: return True
+            else:
+                if nt>=st or nt<=en: return True
+    except: pass
     return False
 
 def sleep_watcher():
@@ -863,9 +899,9 @@ def sleep_watcher():
             sleeping = is_sleep_time()
             if sleeping!=SLEEP_MODE:
                 SLEEP_MODE=sleeping
-                db=get_db()
                 for name in ["Coder","Critic","Judge","Planner","Chef"]:
                     try:
+                        db=get_db()
                         ex=list(db["agent_status"].rows_where("name=?",[name]))
                         if ex and ex[0]["status"] not in ("working","talking"):
                             set_agent(name,"idle" if sleeping else "sleeping")
@@ -882,7 +918,7 @@ def flush_task_queue():
         threading.Thread(target=fn,args=args).start()
 
 def queue_or_run(fn, args, priority=2, task_id=None):
-    if SLEEP_MODE or (task_id and RESOURCE_STATUS["warning"] and not can_start_heavy_task()):
+    if SLEEP_MODE:
         with TASK_QUEUE_LOCK: TASK_QUEUE.append((priority,fn,args))
         return False
     threading.Thread(target=fn,args=args).start()
@@ -973,388 +1009,376 @@ def stack_action(stack_name, action):
 
 # ── CORE TASK RUNNER ──────────────────────────────────────────────────────────
 def run_task(task_id: int, title: str, priority=2):
-    # Wait for dependencies
-    wait_count = 0
-    while not dependencies_met(task_id) and wait_count < 60:
-        time.sleep(10); wait_count+=1
-
-    while SLEEP_MODE: time.sleep(30)
-    while task_id in PAUSED_TASKS: time.sleep(5)
-    db = get_db()
     try:
-        task = db["tasks"].get(task_id)
-        if task["status"] == "cancelled": return
-    except: return
-
-    t_start = time.time()
-    db["tasks"].update(task_id,{"status":"running","agent":"Chef",
-        "updated_at":datetime.now().isoformat()})
-
-    # ── 1. THINKING / DEEP RESEARCH ──────────────────────────────────────────
-    mode = get_thinking_mode()
-    use_thinking = (mode=="on") or (mode=="auto" and should_think_deeply(title))
-
-    cp_research = load_checkpoint(task_id,"research")
-    if cp_research:
-        research = cp_research
-    elif use_thinking:
-        research = deep_research(title)
-    else:
-        research = research_task(title)
-    save_checkpoint(task_id,"research",research)
-
-    journal_ctx = get_journal_context()
-    db["tasks"].update(task_id,{"research":research,"updated_at":datetime.now().isoformat()})
-
-    # ── 2. CHEF EVALUIERT ────────────────────────────────────────────────────
-    plan = chef_evaluate(title, research)
-    coder_count  = plan["coder_count"]
-    cross_check  = plan["cross_check"]
-    do_debate    = plan["debate"]
-    specialization = plan.get("specialization","")
-    model = select_model(title)
-
-    agent_send("Chef","Planner",task_id,"context_share",
-        f"Komplexität: {plan['complexity']}/10, {coder_count} Coder, "
-        f"Debate: {do_debate}, Grund: {plan['reason']}")
-
-    skill_ctx = get_relevant_skills(title)
-    gaps = analyze_tool_gaps(title, research)
-    needed = get_available_tools_for_task(title)
-    used, tool_note = [], ""
-    for t in needed:
+        wait_count = 0
+        while not dependencies_met(task_id) and wait_count < 60:
+            time.sleep(10); wait_count+=1
+        while SLEEP_MODE: time.sleep(30)
+        while task_id in PAUSED_TASKS: time.sleep(5)
+        db = get_db()
         try:
-            if start_tool(t): used.append(t); tool_note+=f" [Tool: {t}]"
-        except: pass
+            task = db["tasks"].get(task_id)
+            if task["status"] == "cancelled": return
+        except: return
 
-    # ── 3. DEBATE (bei Komplexität >= 8) ─────────────────────────────────────
-    approach_note = ""
-    if do_debate:
-        approach = run_debate(task_id, title, research, skill_ctx, model)
-        approach_note = f"\n\nVereinbarter Ansatz:\n{approach}"
-        save_checkpoint(task_id,"debate",approach)
+        t_start = time.time()
+        db["tasks"].update(task_id,{"status":"running","agent":"Chef",
+            "updated_at":datetime.now().isoformat()})
 
-    # ── 4. CODING ────────────────────────────────────────────────────────────
-    n8n_result = ""
-    if "n8n" in title.lower() or "workflow" in title.lower():
-        n8n_res = build_n8n_workflow(title)
-        if n8n_res.get("ok"):
-            n8n_result = f"\n\n[n8n: {n8n_res.get('message','')}]"
+        mode = get_thinking_mode()
+        use_thinking = (mode=="on") or (mode=="auto" and should_think_deeply(title))
 
-    hired = []
-
-    def do_coder_work(agent_name, is_extra=False) -> str:
-        set_agent(agent_name,"working",title)
-        msg_ctx = agent_msg_context(agent_name, task_id)
-        agent_send("Planner",agent_name,task_id,"context_share",
-            f"Research:\n{research[:300]}")
-        extra_note = " Deine Lösung wird mit anderen Codern verglichen." if is_extra else ""
-        base = (
-            f"Aufgabe: {title}{tool_note}\nResearch:\n{research}"
-            f"{skill_ctx}{journal_ctx}{msg_ctx}{approach_note}\n\n"
-            f"Löse vollständig.{extra_note}")
-        if use_thinking:
-            sol, thinking, tlog = llm_think(base,
-                get_agent_prompt(agent_name) or "Präziser Code-Agent.", model)
-            journal_write(f"Thinking {agent_name}: {title[:60]}\n{thinking[:300]}",
-                type_="thinking",author=agent_name,tags="thinking")
+        cp_research = load_checkpoint(task_id,"research")
+        if cp_research:
+            research = cp_research
+        elif use_thinking:
+            research = deep_research(title)
         else:
-            sol, tlog = llm_with_tools(base,
-                get_agent_prompt(agent_name) or "Präziser Code-Agent.", model, agent_name)
-        set_agent(agent_name,"sleeping")
-        agent_send(agent_name,"Critic",task_id,"result_ready",
-            f"{agent_name} fertig. Lösung bereit.")
-        return sol
+            research = research_task(title)
+        save_checkpoint(task_id,"research",research)
 
-    if coder_count == 1:
-        result = do_coder_work("Coder")
-    else:
-        solutions = {}
-        coders = ["Coder"]
-        spec = specialization or f"Spezialist: {title[:40]}"
-        for _ in range(coder_count-1):
-            na = hire_agent("coder", spec, task_id)
-            coders.append(na); hired.append(na)
+        db["tasks"].update(task_id,{"research":research,"updated_at":datetime.now().isoformat()})
 
-        threads = []
-        for i,c in enumerate(coders):
-            def work(cn=c, extra=(i>0)): solutions[cn]=do_coder_work(cn,extra)
-            threads.append(threading.Thread(target=work))
-        for t in threads: t.start()
-        for t in threads: t.join()
+        plan = chef_evaluate(title, research)
+        coder_count  = plan["coder_count"]
+        cross_check  = plan["cross_check"]
+        do_debate    = plan["debate"]
+        model = select_model(title)
 
-        if cross_check and len(solutions)>=2:
-            cns = list(solutions.keys())
-            result = critic_cross_check(task_id,title,
-                solutions[cns[0]],solutions[cns[1]],cns[0],cns[1])
-            if len(solutions)==3:
+        skill_ctx = get_relevant_skills(title)
+        analyze_tool_gaps(title, research)
+        needed = get_available_tools_for_task(title)
+        used, tool_note = [], ""
+        for t in needed:
+            try:
+                if start_tool(t): used.append(t); tool_note+=f" [Tool: {t}]"
+            except: pass
+
+        approach_note = ""
+        if do_debate:
+            approach = run_debate(task_id, title, research, skill_ctx, model)
+            approach_note = f"\n\nVereinbarter Ansatz:\n{approach}"
+
+        n8n_result = ""
+        if "n8n" in title.lower() or "workflow" in title.lower():
+            n8n_res = build_n8n_workflow(title)
+            if n8n_res.get("ok"):
+                n8n_result = f"\n\n[n8n: {n8n_res.get('message','')}]"
+
+        hired = []
+
+        def do_coder_work(agent_name, is_extra=False) -> str:
+            try:
+                set_agent(agent_name,"working",title)
+                msg_ctx = agent_msg_context(agent_name, task_id)
+                extra_note = " Deine Lösung wird verglichen." if is_extra else ""
+                base = (
+                    f"Aufgabe: {title}{tool_note}\nResearch:\n{research}"
+                    f"{skill_ctx}{get_journal_context()}{msg_ctx}{approach_note}\n\n"
+                    f"Löse vollständig.{extra_note}")
+                if use_thinking:
+                    sol, thinking, tlog = llm_think(base,
+                        get_agent_prompt(agent_name) or "Code-Agent.", model)
+                else:
+                    sol, tlog = llm_with_tools(base,
+                        get_agent_prompt(agent_name) or "Code-Agent.", model)
+                set_agent(agent_name,"sleeping")
+                return sol
+            except Exception as e:
+                print(f"do_coder_work error ({agent_name}): {e}")
+                set_agent(agent_name,"sleeping")
+                return f"Fehler: {e}"
+
+        if coder_count == 1:
+            result = do_coder_work("Coder")
+        else:
+            solutions = {}
+            coders = ["Coder"]
+            spec = plan.get("specialization","") or f"Spezialist: {title[:40]}"
+            for _ in range(coder_count-1):
+                na = hire_agent("coder", spec, task_id)
+                coders.append(na); hired.append(na)
+            threads = []
+            for i,c in enumerate(coders):
+                def work(cn=c, extra=(i>0)): solutions[cn]=do_coder_work(cn,extra)
+                threads.append(threading.Thread(target=work))
+            for t in threads: t.start()
+            for t in threads: t.join()
+            if cross_check and len(solutions)>=2:
+                cns = list(solutions.keys())
                 result = critic_cross_check(task_id,title,
-                    result,solutions[cns[2]],"Synthese",cns[2])
-        else:
-            result = solutions.get("Coder",list(solutions.values())[0])
+                    solutions[cns[0]],solutions[cns[1]],cns[0],cns[1])
+            else:
+                result = solutions.get("Coder",list(solutions.values())[0])
 
-    save_checkpoint(task_id,"result",result)
+        save_checkpoint(task_id,"result",result)
 
-    # ── 5. CODE AUSFÜHREN ────────────────────────────────────────────────────
-    while task_id in PAUSED_TASKS: time.sleep(5)
-    exec_output=None; exec_summary=""
-    exec_result=extract_and_run_code(result)
-    if exec_result:
-        exec_output=exec_result
-        if exec_result["success"]:
-            exec_summary=f"\n\n✅ Code ausgeführt:\n{exec_result['stdout'][:400]}"
-        else:
-            exec_summary=f"\n\n⚠️ Fehler: {exec_result['stderr'][:200]}"
-            correction,_ = llm_with_tools(
-                f"Fehler:\n{exec_result['stderr']}\nCode:\n{result[:600]}\nKorrigiere:",
-                "Code-Korrektur.",model)
-            r2=extract_and_run_code(correction)
-            if r2 and r2["success"]:
-                exec_output=r2; result=correction
-                exec_summary=f"\n\n✅ Korrektur OK:\n{r2['stdout'][:400]}"
+        while task_id in PAUSED_TASKS: time.sleep(5)
+        exec_output=None; exec_summary=""
+        exec_result=extract_and_run_code(result)
+        if exec_result:
+            exec_output=exec_result
+            if exec_result["success"]:
+                exec_summary=f"\n\n✅ Code ausgeführt:\n{exec_result['stdout'][:400]}"
+            else:
+                exec_summary=f"\n\n⚠️ Fehler: {exec_result['stderr'][:200]}"
+                correction,_ = llm_with_tools(
+                    f"Fehler:\n{exec_result['stderr']}\nCode:\n{result[:600]}\nKorrigiere:",
+                    "Code-Korrektur.",model)
+                r2=extract_and_run_code(correction)
+                if r2 and r2["success"]:
+                    exec_output=r2; result=correction
+                    exec_summary=f"\n\n✅ Korrektur OK:\n{r2['stdout'][:400]}"
 
-    # ── 6. CONFIDENCE CHECK ───────────────────────────────────────────────────
-    confidence = assess_confidence(title, result, model)
-    if confidence < CONFIDENCE_THRESHOLD:
-        journal_write(f"Niedrige Konfidenz ({confidence}/10) bei: {title[:60]}. "
-            "Zweite Meinung wird eingeholt.",type_="confidence",
-            author="System",tags="confidence,warning")
-        if coder_count==1:
+        confidence = assess_confidence(title, result, model)
+        if confidence < CONFIDENCE_THRESHOLD and coder_count==1:
             extra = hire_agent("coder",f"Zweite Meinung: {title[:40]}",task_id)
             hired.append(extra)
             sol2 = do_coder_work(extra)
             result = critic_cross_check(task_id,title,result,sol2,"Coder",extra)
-            confidence = min(10, confidence+2)
 
-    # ── 7. CRITIC REVIEW ─────────────────────────────────────────────────────
-    if coder_count==1:
-        set_agent("Critic","working",f"Prüft: {title}")
-        critique,_ = llm_with_tools(
-            f"Aufgabe: {title}\nLösung: {result[:500]}\nBewerte kurz (2 Sätze).",
-            get_agent_prompt("Critic") or "Kritischer Reviewer.",MODEL_CODE)
-        set_agent("Critic","sleeping")
-        agent_send("Critic","Chef",task_id,"review_done",critique)
-        result += f"\n\n[Critic: {critique}]"
+        if coder_count==1:
+            set_agent("Critic","working",f"Prüft: {title}")
+            critique,_ = llm_with_tools(
+                f"Aufgabe: {title}\nLösung: {result[:500]}\nBewerte kurz (2 Sätze).",
+                get_agent_prompt("Critic") or "Reviewer.",MODEL_CODE)
+            set_agent("Critic","sleeping")
+            result += f"\n\n[Critic: {critique}]"
 
-    # ── 8. CHEF FINAL-REVIEW ─────────────────────────────────────────────────
-    chef_review = chef_final_review(task_id, title, result)
-    if not chef_review.get("approved",True):
-        agent_send("Chef","Coder",task_id,"revision_needed",
-            chef_review.get("feedback",""))
-        set_agent("Coder","working",f"Überarbeitung: {title}")
-        revision,_ = llm_with_tools(
-            f"Aufgabe: {title}\nLösung:\n{result[:500]}\n"
-            f"Chef-Feedback: {chef_review.get('feedback','')}\nVerbessere:",
-            get_agent_prompt("Coder") or "Code-Agent.",model)
-        result=revision; set_agent("Coder","sleeping")
-        chef_review["quality"] = min(10, chef_review.get("quality",7)+1)
+        chef_review = chef_final_review(task_id, title, result)
+        if not chef_review.get("approved",True):
+            set_agent("Coder","working",f"Überarbeitung: {title}")
+            revision,_ = llm_with_tools(
+                f"Aufgabe: {title}\nLösung:\n{result[:500]}\n"
+                f"Chef-Feedback: {chef_review.get('feedback','')}\nVerbessere:",
+                get_agent_prompt("Coder") or "Code-Agent.",model)
+            result=revision; set_agent("Coder","sleeping")
 
-    chef_note = (f"\n\n[Chef ✓ {chef_review.get('quality',7)}/10: "
-                 f"{chef_review.get('feedback','OK')}]")
+        chef_note = (f"\n\n[Chef ✓ {chef_review.get('quality',7)}/10: "
+                     f"{chef_review.get('feedback','OK')}]")
+        final = result + exec_summary + n8n_result + chef_note
+        duration = time.time() - t_start
+        quality = chef_review.get("quality",7)
 
-    # ── 9. ABSCHLUSS ─────────────────────────────────────────────────────────
-    final = result + exec_summary + n8n_result + chef_note
-    duration = time.time() - t_start
-    db["tasks"].update(task_id,{"status":"done","result":final,
-        "skills_used":", ".join(used),"model_used":f"{model}×{coder_count}",
-        "confidence":confidence,
-        "exec_output":json.dumps(exec_output) if exec_output else "",
-        "updated_at":datetime.now().isoformat()})
+        db["tasks"].update(task_id,{"status":"done","result":final,
+            "skills_used":", ".join(used),"model_used":f"{model}×{coder_count}",
+            "confidence":confidence,
+            "exec_output":json.dumps(exec_output) if exec_output else "",
+            "updated_at":datetime.now().isoformat()})
 
-    quality = chef_review.get("quality",7)
-    record_model_performance(model, file_type(Path(title))
-        if "." in title else "code", quality, True, duration)
+        record_model_performance(model,"code",quality,True,duration)
+        set_agent("Chef","sleeping")
+        set_agent("Judge","working",f"Skill: {title}")
+        create_or_update_skill(title,result,research,used,success=True,quality=quality)
+        journal_write(f"Erledigt ({coder_count} Coder, {confidence}/10): {title[:80]}",
+            type_="auto",author="Chef")
+        set_agent("Judge","sleeping")
 
-    set_agent("Chef","sleeping")
-    set_agent("Judge","working",f"Skill: {title}")
-    create_or_update_skill(title,result,research,used,success=True,quality=quality)
-    journal_write(f"Erledigt ({coder_count} Coder, {confidence}/10 Konfidenz, "
-        f"{quality}/10 Qualität): {title[:80]}",
-        type_="auto",author="Chef",tags="done")
-    set_agent("Judge","sleeping")
+        done_count = db["tasks"].count_where("status='done'")
+        if done_count % 10 == 0:
+            recent = list(db["tasks"].rows_where("status='done'",order_by="updated_at desc"))[:10]
+            for aname in ["Coder","Critic","Planner"]:
+                threading.Thread(target=evolve_agent_prompt,args=(aname,recent,quality)).start()
 
-    # Agenten entlassen & Roster-Stats updaten
-    for a in hired:
+        for a in hired:
+            try:
+                db["agent_roster"].update(a,{"tasks_completed":
+                    db["agent_roster"].get(a)["tasks_completed"]+1})
+            except: pass
+            retire_agent(a)
+        for t in set(used): stop_tool(t)
+        check_self_improve()
+
+    except Exception as e:
+        print(f"run_task error (task {task_id}): {e}")
         try:
-            db["agent_roster"].update(a,{"tasks_completed":
-                db["agent_roster"].get(a)["tasks_completed"]+1,
-                "avg_quality":float(quality)})
+            get_db()["tasks"].update(task_id,{"status":"failed",
+                "result":f"Fehler: {e}","updated_at":datetime.now().isoformat()})
         except: pass
-        retire_agent(a)
-
-    # Agent-Evolution nach 10 Tasks
-    done_count = db["tasks"].count_where("status='done'")
-    if done_count % 10 == 0:
-        recent = list(db["tasks"].rows_where("status='done'",order_by="updated_at desc"))[:10]
-        avg_q = sum([7]*10)/10  # Placeholder
-        for aname in ["Coder","Critic","Planner"]:
-            threading.Thread(target=evolve_agent_prompt,args=(aname,recent,avg_q)).start()
-
-    for t in set(used): stop_tool(t)
-    check_self_improve()
 
 def run_file_task(task_id, title, filename, ftype):
-    while SLEEP_MODE: time.sleep(30)
-    while task_id in PAUSED_TASKS: time.sleep(5)
-    db=get_db()
     try:
-        if db["tasks"].get(task_id)["status"]=="cancelled": return
-    except: return
-    set_agent("Coder","working",f"Datei: {filename}")
-    db["tasks"].update(task_id,{"status":"running","agent":"Coder",
-        "updated_at":datetime.now().isoformat()})
-    model=select_model(title,ftype)
-    research=research_task(f"{title} ({ftype})")
-    skill_ctx=get_relevant_skills(title)
-    journal_ctx=get_journal_context()
-    analyze_tool_gaps(title,research)
-    needed=get_available_tools_for_task(title+f" {ftype}")
-    used,tool_note=[],""
-    for t in needed:
-        try:
-            if start_tool(t): used.append(t); tool_note+=f" [Tool: {t}]"
-        except: pass
-    wp=WORKSPACE/filename
-    if ftype=="video":
-        outname=f"output_{filename}"; outpath=OUTBOX/outname
-        cmd=llm(f"Aufgabe: {title}\nEingabe: {wp}\nAusgabe: {outpath}\n{skill_ctx}\nNUR FFmpeg-Befehl.",
-                "FFmpeg-Experte.")
-        cmd=cmd.strip().strip("```").strip()
-        if cmd.startswith("ffmpeg"):
-            r=subprocess.run(cmd,shell=True,capture_output=True,text=True,timeout=300)
-            result=f"Video OK: {outname}" if r.returncode==0 else f"FFmpeg-Fehler: {r.stderr[:400]}"
-        else: result=f"Kein gültiger Befehl: {cmd[:200]}"
-    elif ftype=="audio":
-        result=f"Audio: {filename}"
-        try:
-            if start_tool("whisper-asr"):
-                r=requests.post("http://localhost:9000/asr",
-                    files={"audio_file":open(wp,"rb")},
-                    params={"task":"transcribe","language":"de"},timeout=120)
-                if r.ok:
-                    text=r.json().get("text",""); on=wp.stem+"_transkript.txt"
-                    (OUTBOX/on).write_text(text); result=f"Transkription: {on}\n{text[:200]}..."
-        except: pass
-    elif ftype=="image":
-        try: result=f"Bild-Analyse:\n{llm_vision(f'Beschreibe detailliert. Aufgabe: {title}',str(wp))}"
-        except: result=llm(f"Bildanalyse {filename}: {title}. LLaVA nicht verfügbar.")
-    else:
-        result,_ = llm_with_tools(
-            f"Aufgabe: {title}\nDatei: {filename} ({ftype}){tool_note}\n"
-            f"Research: {research}\n{skill_ctx}{journal_ctx}\nVerarbeite vollständig.",
-            get_agent_prompt("Coder") or "Code-Agent.", model)
-    exec_result=extract_and_run_code(result)
-    exec_note=""
-    if exec_result:
-        exec_note=f"\n\n✅ {exec_result['stdout'][:300]}" \
-            if exec_result["success"] else f"\n\n⚠️ {exec_result['stderr'][:150]}"
-    outfile=""
-    for c in [OUTBOX/f"output_{filename}",OUTBOX/filename]:
-        if c.exists(): outfile=c.name; break
-    confidence=assess_confidence(title,result,model)
-    db["tasks"].update(task_id,{"status":"done","result":result+exec_note,
-        "output_file":outfile,"model_used":model,"confidence":confidence,
-        "updated_at":datetime.now().isoformat()})
-    set_agent("Coder","sleeping")
-    set_agent("Judge","working",f"Skill: {title}")
-    create_or_update_skill(title,result,research,used)
-    set_agent("Judge","sleeping")
-    for t in set(used): stop_tool(t)
-    check_self_improve()
-
-def plan_project(project_id, name, description, template_steps=None):
-    set_agent("Planner","working",f"Plant: {name}")
-    db=get_db()
-    if template_steps:
-        steps=[{"title":s} for s in template_steps]
-    else:
-        research=research_task(name+" "+description)
-        plan_text=llm(
-            f"Plan für: {name}\nBeschreibung: {description}\nResearch: {research}\n"
-            "NUR JSON, max 5 Schritte:\n[{\"title\":\"Schritt 1\"}]",
-            get_agent_prompt("Planner") or "Projektplaner. Nur JSON.")
-        try: steps=json.loads(plan_text.strip().strip("```json").strip("```").strip())
-        except: steps=[{"title":"Analysieren"},{"title":"Implementieren"},{"title":"Prüfen"}]
-    for i,step in enumerate(steps[:5]):
-        db["project_steps"].insert({"project_id":project_id,"step_num":i+1,
-            "title":step.get("title",f"Schritt {i+1}"),
-            "status":"pending","result":"","updated_at":datetime.now().isoformat()})
-    set_agent("Planner","sleeping")
-    execute_project(project_id)
-
-def execute_project(project_id):
-    db=get_db()
-    project=db["projects"].get(project_id)
-    steps=list(db["project_steps"].rows_where(
-        "project_id=? AND status='pending'",[project_id],order_by="step_num"))
-    hired=[]
-    for step in steps:
         while SLEEP_MODE: time.sleep(30)
-        if db["projects"].get(project_id)["status"]=="cancelled": break
-        set_agent("Coder","working",step["title"])
-        db["project_steps"].update(step["id"],{"status":"running","updated_at":datetime.now().isoformat()})
-        db["projects"].update(project_id,{"status":"running","updated_at":datetime.now().isoformat()})
-        skill_ctx=get_relevant_skills(step["title"])
-        model=select_model(step["title"])
-        needed=get_available_tools_for_task(step["title"])
+        while task_id in PAUSED_TASKS: time.sleep(5)
+        db=get_db()
+        if db["tasks"].get(task_id)["status"]=="cancelled": return
+        set_agent("Coder","working",f"Datei: {filename}")
+        db["tasks"].update(task_id,{"status":"running","agent":"Coder",
+            "updated_at":datetime.now().isoformat()})
+        model=select_model(title,ftype)
+        research=research_task(f"{title} ({ftype})")
+        skill_ctx=get_relevant_skills(title)
+        analyze_tool_gaps(title,research)
+        needed=get_available_tools_for_task(title+f" {ftype}")
         used,tool_note=[],""
         for t in needed:
             try:
                 if start_tool(t): used.append(t); tool_note+=f" [Tool: {t}]"
             except: pass
-        result,tlog=llm_with_tools(
-            f"Projekt: {project['name']}\nAufgabe: {step['title']}{tool_note}\n"
-            f"{skill_ctx}\nFühre vollständig durch.",
-            get_agent_prompt("Coder") or "Code-Agent.",model)
+        wp=WORKSPACE/filename
+        if ftype=="video":
+            outname=f"output_{filename}"; outpath=OUTBOX/outname
+            cmd=llm(f"Aufgabe: {title}\nEingabe: {wp}\nAusgabe: {outpath}\n{skill_ctx}\nNUR FFmpeg-Befehl.","FFmpeg-Experte.")
+            cmd=cmd.strip().strip("```").strip()
+            if cmd.startswith("ffmpeg"):
+                r=subprocess.run(cmd,shell=True,capture_output=True,text=True,timeout=300)
+                result=f"Video OK: {outname}" if r.returncode==0 else f"FFmpeg-Fehler: {r.stderr[:400]}"
+            else: result=f"Kein gültiger Befehl: {cmd[:200]}"
+        elif ftype=="audio":
+            result=f"Audio: {filename}"
+            try:
+                if start_tool("whisper-asr"):
+                    r=requests.post("http://localhost:9000/asr",
+                        files={"audio_file":open(wp,"rb")},
+                        params={"task":"transcribe","language":"de"},timeout=120)
+                    if r.ok:
+                        text=r.json().get("text",""); on=wp.stem+"_transkript.txt"
+                        (OUTBOX/on).write_text(text); result=f"Transkription: {on}\n{text[:200]}..."
+            except: pass
+        elif ftype=="image":
+            try: result=f"Bild-Analyse:\n{llm_vision(f'Beschreibe detailliert. Aufgabe: {title}',str(wp))}"
+            except: result=llm(f"Bildanalyse {filename}: {title}. LLaVA nicht verfügbar.")
+        else:
+            result,_ = llm_with_tools(
+                f"Aufgabe: {title}\nDatei: {filename} ({ftype}){tool_note}\n"
+                f"Research: {research}\n{skill_ctx}\nVerarbeite vollständig.",
+                get_agent_prompt("Coder") or "Code-Agent.", model)
         exec_result=extract_and_run_code(result)
         exec_note=""
         if exec_result:
-            exec_note=f"\n✅ {exec_result['stdout'][:200]}" \
-                if exec_result["success"] else f"\n⚠️ {exec_result['stderr'][:100]}"
-        confidence=assess_confidence(step["title"],result,model)
-        db["project_steps"].update(step["id"],{"status":"done",
-            "result":result+exec_note,"updated_at":datetime.now().isoformat()})
+            exec_note=f"\n\n✅ {exec_result['stdout'][:300]}" \
+                if exec_result["success"] else f"\n\n⚠️ {exec_result['stderr'][:150]}"
+        outfile=""
+        for c in [OUTBOX/f"output_{filename}",OUTBOX/filename]:
+            if c.exists(): outfile=c.name; break
+        confidence=assess_confidence(title,result,model)
+        db["tasks"].update(task_id,{"status":"done","result":result+exec_note,
+            "output_file":outfile,"model_used":model,"confidence":confidence,
+            "updated_at":datetime.now().isoformat()})
         set_agent("Coder","sleeping")
-        set_agent("Critic","working",f"Prüft: {step['title']}")
-        critique,_=llm_with_tools(
-            f"Bewerte (2 Sätze): {step['title']}\nLösung: {result[:400]}",
-            get_agent_prompt("Critic") or "Reviewer.",MODEL_CODE)
-        db["project_steps"].update(step["id"],
-            {"result":result+exec_note+f"\n\nCritic: {critique}",
-             "updated_at":datetime.now().isoformat()})
-        set_agent("Critic","sleeping")
-        set_agent("Judge","working",f"Skill: {step['title']}")
-        create_or_update_skill(step["title"],result,"",used)
+        set_agent("Judge","working",f"Skill: {title}")
+        create_or_update_skill(title,result,research,used)
         set_agent("Judge","sleeping")
-    for t in set(used): stop_tool(t)
-    final="cancelled" if db["projects"].get(project_id)["status"]=="cancelled" else "done"
-    db["projects"].update(project_id,{"status":final,"updated_at":datetime.now().isoformat()})
-    journal_write(f"Projekt abgeschlossen: {project['name']}",
-        type_="auto",author="Chef",tags="project,done")
-    check_self_improve()
+        for t in set(used): stop_tool(t)
+        check_self_improve()
+    except Exception as e:
+        print(f"run_file_task error: {e}")
+        try:
+            get_db()["tasks"].update(task_id,{"status":"failed",
+                "result":f"Fehler: {e}","updated_at":datetime.now().isoformat()})
+        except: pass
+
+def plan_project(project_id, name, description, template_steps=None):
+    try:
+        set_agent("Planner","working",f"Plant: {name}")
+        db=get_db()
+        if template_steps:
+            steps=[{"title":s} for s in template_steps]
+        else:
+            research=research_task(name+" "+description)
+            plan_text=llm(
+                f"Plan für: {name}\nBeschreibung: {description}\nResearch: {research}\n"
+                "NUR JSON, max 5 Schritte:\n[{\"title\":\"Schritt 1\"}]",
+                get_agent_prompt("Planner") or "Projektplaner. Nur JSON.")
+            try:
+                steps=json.loads(plan_text.strip().strip("```json").strip("```").strip())
+            except:
+                steps=[{"title":"Analysieren"},{"title":"Implementieren"},{"title":"Prüfen"}]
+        for i,step in enumerate(steps[:5]):
+            db["project_steps"].insert({"project_id":project_id,"step_num":i+1,
+                "title":step.get("title",f"Schritt {i+1}"),
+                "status":"pending","result":"","updated_at":datetime.now().isoformat()})
+        set_agent("Planner","sleeping")
+        execute_project(project_id)
+    except Exception as e:
+        print(f"plan_project error: {e}")
+        set_agent("Planner","sleeping")
+        try:
+            get_db()["projects"].update(project_id,{"status":"failed",
+                "updated_at":datetime.now().isoformat()})
+        except: pass
+
+def execute_project(project_id):
+    try:
+        db=get_db()
+        project=db["projects"].get(project_id)
+        steps=list(db["project_steps"].rows_where(
+            "project_id=? AND status='pending'",[project_id],order_by="step_num"))
+        hired=[]
+        for step in steps:
+            while SLEEP_MODE: time.sleep(30)
+            if db["projects"].get(project_id)["status"]=="cancelled": break
+            set_agent("Coder","working",step["title"])
+            db["project_steps"].update(step["id"],{"status":"running","updated_at":datetime.now().isoformat()})
+            db["projects"].update(project_id,{"status":"running","updated_at":datetime.now().isoformat()})
+            skill_ctx=get_relevant_skills(step["title"])
+            model=select_model(step["title"])
+            needed=get_available_tools_for_task(step["title"])
+            used,tool_note=[],""
+            for t in needed:
+                try:
+                    if start_tool(t): used.append(t); tool_note+=f" [Tool: {t}]"
+                except: pass
+            result,tlog=llm_with_tools(
+                f"Projekt: {project['name']}\nAufgabe: {step['title']}{tool_note}\n"
+                f"{skill_ctx}\nFühre vollständig durch.",
+                get_agent_prompt("Coder") or "Code-Agent.",model)
+            exec_result=extract_and_run_code(result)
+            exec_note=""
+            if exec_result:
+                exec_note=f"\n✅ {exec_result['stdout'][:200]}" \
+                    if exec_result["success"] else f"\n⚠️ {exec_result['stderr'][:100]}"
+            db["project_steps"].update(step["id"],{"status":"done",
+                "result":result+exec_note,"updated_at":datetime.now().isoformat()})
+            set_agent("Coder","sleeping")
+            set_agent("Critic","working",f"Prüft: {step['title']}")
+            critique,_=llm_with_tools(
+                f"Bewerte (2 Sätze): {step['title']}\nLösung: {result[:400]}",
+                get_agent_prompt("Critic") or "Reviewer.",MODEL_CODE)
+            db["project_steps"].update(step["id"],
+                {"result":result+exec_note+f"\n\nCritic: {critique}",
+                 "updated_at":datetime.now().isoformat()})
+            set_agent("Critic","sleeping")
+            set_agent("Judge","working",f"Skill: {step['title']}")
+            create_or_update_skill(step["title"],result,"",used)
+            set_agent("Judge","sleeping")
+        for t in set(used): stop_tool(t)
+        final="cancelled" if db["projects"].get(project_id)["status"]=="cancelled" else "done"
+        db["projects"].update(project_id,{"status":final,"updated_at":datetime.now().isoformat()})
+        journal_write(f"Projekt abgeschlossen: {project['name']}",type_="auto",author="Chef")
+        check_self_improve()
+    except Exception as e:
+        print(f"execute_project error: {e}")
+        try:
+            get_db()["projects"].update(project_id,{"status":"failed",
+                "updated_at":datetime.now().isoformat()})
+        except: pass
 
 def process_inbox_file(filepath):
-    db=get_db(); filename=filepath.name
-    if list(db["inbox_log"].rows_where("filename=?",[filename])): return
-    db["inbox_log"].insert({"filename":filename,"processed_at":datetime.now().isoformat()})
-    if filepath.suffix.lower()==".txt": return
-    instr_file=filepath.with_suffix(".txt")
-    instruction=instr_file.read_text(encoding="utf-8",errors="ignore").strip() \
-        if instr_file.exists() else ""
-    ftype=file_type(filepath)
-    if not instruction:
-        defaults={"video":"Schneide und optimiere","audio":"Transkribiere",
-                  "image":"Analysiere detailliert","code":"Überprüfe und verbessere",
-                  "text":"Analysiere"}
-        instruction=defaults.get(ftype,f"Verarbeite: {filename}")
-    shutil.copy2(filepath,WORKSPACE/filename)
-    row_id=db["tasks"].insert({"project_id":None,"title":instruction,
-        "status":"pending","priority":2,"paused":0,"agent":"","result":"",
-        "research":"","skills_used":"","feedback":"","source_file":filename,
-        "output_file":"","model_used":"","exec_output":"","confidence":0,
-        "depends_on":"[]","created_at":datetime.now().isoformat(),
-        "updated_at":datetime.now().isoformat()}).last_pk
-    queue_or_run(run_file_task,(row_id,instruction,filename,ftype),priority=2,task_id=row_id)
+    try:
+        db=get_db(); filename=filepath.name
+        if list(db["inbox_log"].rows_where("filename=?",[filename])): return
+        db["inbox_log"].insert({"filename":filename,"processed_at":datetime.now().isoformat()})
+        if filepath.suffix.lower()==".txt": return
+        instr_file=filepath.with_suffix(".txt")
+        instruction=instr_file.read_text(encoding="utf-8",errors="ignore").strip() \
+            if instr_file.exists() else ""
+        ftype=file_type(filepath)
+        if not instruction:
+            defaults={"video":"Schneide und optimiere","audio":"Transkribiere",
+                      "image":"Analysiere detailliert","code":"Überprüfe und verbessere",
+                      "text":"Analysiere"}
+            instruction=defaults.get(ftype,f"Verarbeite: {filename}")
+        shutil.copy2(filepath,WORKSPACE/filename)
+        row_id=db["tasks"].insert({"project_id":None,"title":instruction,
+            "status":"pending","priority":2,"paused":0,"agent":"","result":"",
+            "research":"","skills_used":"","feedback":"","source_file":filename,
+            "output_file":"","model_used":"","exec_output":"","confidence":0,
+            "depends_on":"[]","created_at":datetime.now().isoformat(),
+            "updated_at":datetime.now().isoformat()}).last_pk
+        queue_or_run(run_file_task,(row_id,instruction,filename,ftype),priority=2)
+    except Exception as e:
+        print(f"process_inbox_file error: {e}")
 
 def inbox_watcher():
     while True:
@@ -1367,45 +1391,45 @@ def inbox_watcher():
         time.sleep(10)
 
 def check_self_improve():
-    db=get_db()
-    total=db["tasks"].count_where("status='done'")+db["projects"].count_where("status='done'")
-    improvements=db["improvements"].count
-    if total>0 and total%IMPROVE_AFTER==0 and improvements<total//IMPROVE_AFTER:
-        threading.Thread(target=self_improve).start()
+    try:
+        db=get_db()
+        total=db["tasks"].count_where("status='done'")+db["projects"].count_where("status='done'")
+        improvements=db["improvements"].count
+        if total>0 and total%IMPROVE_AFTER==0 and improvements<total//IMPROVE_AFTER:
+            threading.Thread(target=self_improve).start()
+    except: pass
 
 def self_improve():
-    set_agent("Judge","working","Selbstverbesserung...")
-    db=get_db()
-    skills=list(db["skills"].rows)
-    skill_summary="\n".join([f"- {s['name']} v{s['version']}: {s['success_count']}x OK"
-        for s in skills]) if skills else "Keine Skills"
-    recent=list(db["tasks"].rows_where("status='done'",order_by="updated_at desc"))[:8]
-    tasks_text="\n".join([t["title"] for t in recent])
-    analysis=llm(
-        f"Skills:\n{skill_summary}\n\nZuletzt:\n{tasks_text}\n\n"
-        "1. Schwache Skills?\n2. Fehlende Skills?\n3. Effizienzverbesserungen?\n"
-        "Nur kostenlose, self-hostbare Ansätze.",
-        get_agent_prompt("Judge") or "KI-System das sich verbessert.")
-    db["improvements"].insert({"summary":analysis,"applied_at":datetime.now().isoformat()})
-    journal_write(f"Selbstverbesserung:\n{analysis}",type_="improvement",
-        author="Judge",tags="self-improve")
-    agent_propose_improvement()
-    set_agent("Judge","sleeping")
+    try:
+        set_agent("Judge","working","Selbstverbesserung...")
+        db=get_db()
+        skills=list(db["skills"].rows)
+        skill_summary="\n".join([f"- {s['name']} v{s['version']}"
+            for s in skills]) if skills else "Keine Skills"
+        recent=list(db["tasks"].rows_where("status='done'",order_by="updated_at desc"))[:8]
+        tasks_text="\n".join([t["title"] for t in recent])
+        analysis=llm(
+            f"Skills:\n{skill_summary}\n\nZuletzt:\n{tasks_text}\n\n"
+            "Verbesserungsvorschläge? Nur kostenlose, self-hostbare Ansätze.",
+            get_agent_prompt("Judge") or "KI-System das sich verbessert.")
+        db["improvements"].insert({"summary":analysis,"applied_at":datetime.now().isoformat()})
+        journal_write(f"Selbstverbesserung:\n{analysis}",type_="improvement",author="Judge")
+        agent_propose_improvement()
+        set_agent("Judge","sleeping")
+    except Exception as e:
+        print(f"self_improve error: {e}")
+        set_agent("Judge","sleeping")
 
 def agent_propose_improvement():
-    db=get_db()
     try:
+        db=get_db()
         with open("/app/backend/main.py","r") as f: code=f.read()
-    except: return
-    recent=list(db["tasks"].rows_where("status='done'",order_by="updated_at desc"))[:5]
-    skill_names=", ".join([s["name"] for s in list(db["skills"].rows)[:10]])
-    proposal=llm(
-        f"Code (Auszug):\n{code[:2000]}\n\nAufgaben:\n{chr(10).join([t['title'] for t in recent])}\n"
-        f"Skills: {skill_names}\n\n"
-        "Welche Code-Verbesserung bringt am meisten? Fehlerbehandlung, neue Funktion, Effizienz.\n"
-        'NUR JSON: {"title":"X","description":"Y","new_code":""}',
-        "Python-Entwickler. Konkrete Vorschläge. new_code leer.")
-    try:
+        recent=list(db["tasks"].rows_where("status='done'",order_by="updated_at desc"))[:5]
+        proposal=llm(
+            f"Code (Auszug):\n{code[:2000]}\n\nAufgaben:\n"
+            f"{chr(10).join([t['title'] for t in recent])}\n\n"
+            'Verbesserungsvorschlag. NUR JSON: {"title":"X","description":"Y","new_code":""}',
+            "Python-Entwickler. new_code leer.")
         prop=json.loads(proposal.strip().strip("```json").strip("```").strip())
         if prop.get("title") and db["code_updates"].count_where("status='pending'")<5:
             db["code_updates"].insert({"title":prop["title"],
@@ -1413,7 +1437,8 @@ def agent_propose_improvement():
                 "new_code":prop.get("new_code",""),"status":"pending",
                 "proposed_by":"Self-Improve Agent",
                 "created_at":datetime.now().isoformat(),"reviewed_at":""})
-    except: pass
+    except Exception as e:
+        print(f"agent_propose_improvement error: {e}")
 
 def proactive_code_analyst():
     time.sleep(3600)
@@ -1447,17 +1472,21 @@ def apply_and_restart(uid):
             "reviewed_at":datetime.now().isoformat()})
 
 def do_ui_modify(instruction):
-    set_agent("Judge","working",f"UI: {instruction}")
-    src=FRONTEND_PATH if os.path.exists(FRONTEND_PATH) else FRONTEND_SRC
     try:
-        with open(src,"r") as f: current=f.read()
-    except: current=""
-    new_html=llm(f"HTML:\n{current[:3000]}\n\nÄnderung: {instruction}\n\nNUR vollständiger HTML-Code.",
-                 "Frontend-Entwickler. Nur HTML.")
-    clean=new_html.strip().strip("```html").strip("```").strip()
-    if "<html" in clean or "<!DOCTYPE" in clean:
-        with open(FRONTEND_PATH,"w") as f: f.write(clean)
-    set_agent("Judge","sleeping")
+        set_agent("Judge","working",f"UI: {instruction}")
+        src=FRONTEND_PATH if os.path.exists(FRONTEND_PATH) else FRONTEND_SRC
+        try:
+            with open(src,"r") as f: current=f.read()
+        except: current=""
+        new_html=llm(f"HTML:\n{current[:3000]}\n\nÄnderung: {instruction}\n\nNUR vollständiger HTML-Code.",
+                     "Frontend-Entwickler. Nur HTML.")
+        clean=new_html.strip().strip("```html").strip("```").strip()
+        if "<html" in clean or "<!DOCTYPE" in clean:
+            with open(FRONTEND_PATH,"w") as f: f.write(clean)
+        set_agent("Judge","sleeping")
+    except Exception as e:
+        print(f"do_ui_modify error: {e}")
+        set_agent("Judge","sleeping")
 
 # ── API ───────────────────────────────────────────────────────────────────────
 @app.get("/",response_class=HTMLResponse)
@@ -1484,11 +1513,10 @@ def get_tasks(): return list(get_db()["tasks"].rows)
 def get_tasks_summary():
     db=get_db()
     pending=list(db["tasks"].rows_where("status in ('pending','queued','running')"))
-    done=list(db["tasks"].rows_where("status='done'",order_by="updated_at desc"))[:5]
     if len(pending)>7:
         summary=llm(
-            "Aufgaben in Queue:\n"+"\n".join([f"- {t['title'][:50]}" for t in pending])+
-            "\n\nKurze Zusammenfassung und Empfehlung?","Projektmanager.")
+            "Aufgaben:\n"+"\n".join([f"- {t['title'][:50]}" for t in pending])+
+            "\n\nKurze Zusammenfassung?","Projektmanager.")
         return {"summary":summary,"pending_count":len(pending)}
     return {"summary":"","pending_count":len(pending)}
 
@@ -1503,8 +1531,7 @@ def add_task(task: dict):
         "confidence":0,"depends_on":json.dumps(task.get("depends_on",[])),
         "created_at":datetime.now().isoformat(),
         "updated_at":datetime.now().isoformat()}).last_pk
-    queued=not queue_or_run(run_task,(row_id,task["title"],priority),
-                             priority=priority,task_id=row_id)
+    queued=not queue_or_run(run_task,(row_id,task["title"],priority),priority=priority)
     if queued:
         db["tasks"].update(row_id,{"status":"queued","updated_at":datetime.now().isoformat()})
     return {"ok":True,"id":row_id,"queued":queued}
@@ -1572,7 +1599,10 @@ def create_project(data: dict):
 def cancel_project(pid: int):
     db=get_db()
     db["projects"].update(pid,{"status":"cancelled","updated_at":datetime.now().isoformat()})
-    db["project_steps"].update_where("project_id=? AND status='pending'",[pid],{"status":"cancelled"})
+    # FIX: update_where ersetzt durch Loop
+    for step in list(db["project_steps"].rows_where(
+            "project_id=? AND status='pending'",[pid])):
+        db["project_steps"].update(step["id"],{"status":"cancelled"})
     return {"ok":True}
 
 @app.get("/templates")
@@ -1619,21 +1649,21 @@ def get_improvements(): return list(get_db()["improvements"].rows)
 
 @app.get("/model-performance")
 def get_model_performance():
-    db=get_db()
-    rows=list(db["model_performance"].rows_where(order_by="recorded_at desc"))[:100]
-    by_model={}
-    for r in rows:
-        m=r["model"]; t=r["task_type"]
-        key=f"{m}::{t}"
-        if key not in by_model: by_model[key]={"model":m,"task_type":t,"qualities":[],"count":0}
-        by_model[key]["qualities"].append(r["quality"])
-        by_model[key]["count"]+=1
-    result=[]
-    for k,v in by_model.items():
-        v["avg_quality"]=round(sum(v["qualities"])/len(v["qualities"]),1)
-        del v["qualities"]
-        result.append(v)
-    return sorted(result,key=lambda x:-x["avg_quality"])
+    try:
+        db=get_db()
+        rows=list(db["model_performance"].rows_where(order_by="recorded_at desc"))[:100]
+        by_model={}
+        for r in rows:
+            key=f"{r['model']}::{r['task_type']}"
+            if key not in by_model: by_model[key]={"model":r["model"],"task_type":r["task_type"],"qualities":[],"count":0}
+            by_model[key]["qualities"].append(r["quality"])
+            by_model[key]["count"]+=1
+        result=[]
+        for k,v in by_model.items():
+            v["avg_quality"]=round(sum(v["qualities"])/len(v["qualities"]),1)
+            del v["qualities"]; result.append(v)
+        return sorted(result,key=lambda x:-x["avg_quality"])
+    except: return []
 
 @app.get("/journal")
 def get_journal():
@@ -1657,28 +1687,30 @@ def execute_endpoint(data: dict):
 
 @app.post("/chat")
 def chat(data: dict):
-    messages=data.get("messages",[])
-    db=get_db()
-    running=list(db["tasks"].rows_where("status='running'"))
-    pending=list(db["tasks"].rows_where("status in ('pending','queued')"))
-    projects=list(db["projects"].rows_where("status in ('running','planning')"))
-    done=list(db["tasks"].rows_where("status='done'",order_by="updated_at desc"))[:3]
-    thinking_mode=get_thinking_mode()
-    context=(
-        f"Du bist der Chef-Agent von Agent Office.\n"
-        f"Status: {len(running)} laufend, {len(pending)} wartend, "
-        f"{len(projects)} Projekte, {db['skills'].count} Skills.\n"
-        f"Laufend: {', '.join([t['title'][:40] for t in running])}\n"
-        f"Wartend: {', '.join([t['title'][:30] for t in pending[:5]])}\n"
-        f"Zuletzt: {', '.join([t['title'][:40] for t in done])}\n"
-        f"Thinking-Modus: {thinking_mode}, RAM: {RESOURCE_STATUS['ram_pct']}%\n"
-        f"{get_journal_context()}\n"
-        "Antworte auf Deutsch. Sei direkt und hilfreich."
-    )
-    conv="\n".join([f"{'Nutzer' if m['role']=='user' else 'Chef'}: {m['content']}"
-        for m in messages[-8:]])
-    response=llm(conv,context)
-    return {"response":response}
+    try:
+        messages=data.get("messages",[])
+        db=get_db()
+        running=list(db["tasks"].rows_where("status='running'"))
+        pending=list(db["tasks"].rows_where("status in ('pending','queued')"))
+        projects=list(db["projects"].rows_where("status in ('running','planning')"))
+        done=list(db["tasks"].rows_where("status='done'",order_by="updated_at desc"))[:3]
+        context=(
+            f"Du bist der Chef-Agent von Agent Office.\n"
+            f"Status: {len(running)} laufend, {len(pending)} wartend, "
+            f"{len(projects)} Projekte aktiv.\n"
+            f"Laufend: {', '.join([t['title'][:40] for t in running])}\n"
+            f"Wartend: {', '.join([t['title'][:30] for t in pending[:5]])}\n"
+            f"Zuletzt: {', '.join([t['title'][:40] for t in done])}\n"
+            f"RAM: {RESOURCE_STATUS['ram_pct']}%, Thinking: {get_thinking_mode()}\n"
+            f"{get_journal_context()}\n"
+            "Antworte auf Deutsch. Sei direkt und hilfreich."
+        )
+        conv="\n".join([f"{'Nutzer' if m['role']=='user' else 'Chef'}: {m['content']}"
+            for m in messages[-8:]])
+        response=llm(conv,context)
+        return {"response":response}
+    except Exception as e:
+        return {"response":f"Fehler: {e}"}
 
 @app.get("/agents/roster")
 def get_roster():
